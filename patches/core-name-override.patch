@@ -1,0 +1,106 @@
+Name override: let a player answer name queries with another name for a while.
+
+Made against AzerothCore rev b3717c137710. Adds a small in-memory registry
+(src/server/game/Cache/NameOverride.*) and makes WorldSession::SendNameQueryOpcode consult it
+before the character cache. The cache and the database are never changed. Required by
+mod-shapeshift.
+
+Apply from the core source root: git apply --check, then git apply. Re-run the CMake configure
+step afterwards (new files).
+
+diff --git a/src/server/game/Cache/NameOverride.cpp b/src/server/game/Cache/NameOverride.cpp
+new file mode 100644
+index 0000000..5910366
+--- /dev/null
++++ b/src/server/game/Cache/NameOverride.cpp
+@@ -0,0 +1,37 @@
++/*
++ * Conquest of Azeroth: see NameOverride.h. Name queries are answered from map and session
++ * threads, so the table is guarded.
++ */
++
++#include "NameOverride.h"
++
++#include <mutex>
++#include <shared_mutex>
++#include <unordered_map>
++
++namespace
++{
++    std::shared_mutex Lock;
++    std::unordered_map<ObjectGuid, std::string> Names;
++}
++
++void NameOverride::Set(ObjectGuid guid, std::string const& name)
++{
++    std::unique_lock<std::shared_mutex> guard(Lock);
++    Names[guid] = name;
++}
++
++void NameOverride::Clear(ObjectGuid guid)
++{
++    std::unique_lock<std::shared_mutex> guard(Lock);
++    Names.erase(guid);
++}
++
++std::optional<std::string> NameOverride::Find(ObjectGuid guid)
++{
++    std::shared_lock<std::shared_mutex> guard(Lock);
++    auto it = Names.find(guid);
++    if (it == Names.end())
++        return std::nullopt;
++    return it->second;
++}
+diff --git a/src/server/game/Cache/NameOverride.h b/src/server/game/Cache/NameOverride.h
+new file mode 100644
+index 0000000..7cca15e
+--- /dev/null
++++ b/src/server/game/Cache/NameOverride.h
+@@ -0,0 +1,23 @@
++/*
++ * Conquest of Azeroth: a per-player display name that name queries answer with instead of the
++ * character's real name. Held in memory only; the character cache and the database never see
++ * it. Set and cleared by mod-shapeshift.
++ */
++
++#ifndef _NAME_OVERRIDE_H
++#define _NAME_OVERRIDE_H
++
++#include "Define.h"
++#include "ObjectGuid.h"
++
++#include <optional>
++#include <string>
++
++namespace NameOverride
++{
++    AC_GAME_API void Set(ObjectGuid guid, std::string const& name);
++    AC_GAME_API void Clear(ObjectGuid guid);
++    AC_GAME_API std::optional<std::string> Find(ObjectGuid guid);
++}
++
++#endif
+diff --git a/src/server/game/Handlers/QueryHandler.cpp b/src/server/game/Handlers/QueryHandler.cpp
+index eb0142a..1b90857 100644
+--- a/src/server/game/Handlers/QueryHandler.cpp
++++ b/src/server/game/Handlers/QueryHandler.cpp
+@@ -19,6 +19,7 @@
+ #include "GameTime.h"
+ #include "Log.h"
+ #include "MapMgr.h"
++#include "NameOverride.h"
+ #include "NPCHandler.h"
+ #include "ObjectMgr.h"
+ #include "Opcodes.h"
+@@ -45,7 +46,10 @@ void WorldSession::SendNameQueryOpcode(ObjectGuid guid)
+     Player* player = ObjectAccessor::FindConnectedPlayer(guid);
+ 
+     nameQueryResponse.NameUnknown = false;
+-    nameQueryResponse.Name = playerData->Name;
++    // Conquest of Azeroth: mod-shapeshift can give a player another name for a while. The
++    // override outlives Write() below because it is held in this scope.
++    std::optional<std::string> overrideName = NameOverride::Find(guid);
++    nameQueryResponse.Name = overrideName ? std::string_view(*overrideName) : std::string_view(playerData->Name);
+     nameQueryResponse.Race = player ? player->getRace() : playerData->Race;
+     nameQueryResponse.Sex = player ? player->getGender() : playerData->Sex;
+     nameQueryResponse.Class = player ? player->getClass() : playerData->Class;

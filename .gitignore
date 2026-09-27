@@ -1,0 +1,5 @@
+__pycache__/
+backups/
+build_exe.log
+build_exe/
+dist/

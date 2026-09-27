@@ -1,0 +1,5 @@
+<Bindings>
+    <Binding name="SHAPESHIFT_SWITCH_VISAGE" header="SHAPESHIFT">
+        Shapeshift.SwitchVisage()
+    </Binding>
+</Bindings>

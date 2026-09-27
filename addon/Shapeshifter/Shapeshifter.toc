@@ -1,0 +1,23 @@
+## Interface: 30300
+## Title: Shapeshifter
+## Notes: Become iconic bosses and mobs for a while (GM only; needs mod-shapeshifter on the server).
+## Author: Sass42
+## Version: 1.0.0
+## SavedVariables: ShapeshifterDB
+## SavedVariablesPerCharacter: ShapeshifterCharDB
+
+Core\Bands.lua
+Core\Protocol.lua
+Core\Catalogue.lua
+Core\CastPlan.lua
+Data\Forms.lua
+Data\Creatures.lua
+Data\ClassGrade.lua
+Core\Shapeshift.lua
+UI\Minimap.lua
+UI\Catalogue.lua
+UI\BossBar.lua
+UI\Camera.lua
+UI\Talents.lua
+UI\Sheet.lua
+Spike\Spike.lua

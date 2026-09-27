@@ -1,0 +1,57 @@
+Form speed: let a shapeshift form run and fly at its own speed.
+
+Made against AzerothCore rev b3717c137710, after core-weapon-override.patch (the Player.h hunks
+sit next to its lines). Adds Player::SetFormSpeedRate / GetFormSpeedRate (a multiplier per
+UnitMoveType, 1.0 by default, memory only) and the COA_FORM_SPEED macro. Unit::UpdateSpeed
+multiplies a player's run, swim and flight speed by it where a creature's speed_run would go:
+speed auras still add on top, and slows, the normal-speed cap and Crusader's Brand still apply
+after it. Optional for mod-shapeshift.
+
+Apply from the core source root: git apply --check, then git apply. Player.h changes mean a
+near-full rebuild.
+
+--- a/src/server/game/Entities/Player/Player.h
++++ b/src/server/game/Entities/Player/Player.h
+@@ -20,6 +20,8 @@
+ 
+ // Conquest of Azeroth: Player::SetWeaponOverride exists (server/patches/core-weapon-override.patch).
+ #define COA_WEAPON_OVERRIDE 1
++// Conquest of Azeroth: Player::SetFormSpeedRate exists (server/patches/core-form-speed.patch).
++#define COA_FORM_SPEED 1
+ 
+ #include "ArenaTeam.h"
+ #include "Battleground.h"
+@@ -1308,6 +1310,14 @@
+     {
+         return m_hasWeaponOverride && type < MAX_ATTACK ? m_weaponOverride[type] : nullptr;
+     }
++    // Conquest of Azeroth: a shapeshift form's own run and flight speed, multiplied into
++    // Unit::UpdateSpeed before slows (1.0: none). Memory only; set and cleared by mod-shapeshift.
++    void SetFormSpeedRate(UnitMoveType type, float rate)
++    {
++        if (type < MAX_MOVE_TYPE)
++            m_formSpeedRate[type] = rate;
++    }
++    [[nodiscard]] float GetFormSpeedRate(UnitMoveType type) const { return type < MAX_MOVE_TYPE ? m_formSpeedRate[type] : 1.0f; }
+     [[nodiscard]] Item* GetShield(bool useable = false) const;
+     static WeaponAttackType GetAttackBySlot(uint8 slot);        // MAX_ATTACK if not weapon slot
+     std::vector<Item*>& GetItemUpdateQueue() { return m_itemUpdateQueue; }
+@@ -3039,6 +3049,7 @@
+     bool m_canTitanGrip;
+     ItemTemplate const* m_weaponOverride[MAX_ATTACK] = {};  // Conquest of Azeroth, see SetWeaponOverride
+     bool m_hasWeaponOverride = false;
++    float m_formSpeedRate[MAX_MOVE_TYPE] = { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };  // Conquest of Azeroth, see SetFormSpeedRate
+     uint8 m_swingErrorMsg;
+     float m_ammoDPS;
+ 
+--- a/src/server/game/Entities/Unit/Unit.cpp
++++ b/src/server/game/Entities/Unit/Unit.cpp
+@@ -11732,6 +11732,8 @@
+                     speed *= ToCreature()->GetCreatureTemplate()->speed_run; // at this point, MOVE_WALK is never reached
+                 }
+             }
++            else if (Player const* player = ToPlayer())
++                speed *= player->GetFormSpeedRate(mtype);    // Conquest of Azeroth: a shapeshift form's own speed
+ 
+             // Normalize speed by 191 aura SPELL_AURA_USE_NORMAL_MOVEMENT_SPEED if need
+             /// @todo possible affect only on MOVE_RUN

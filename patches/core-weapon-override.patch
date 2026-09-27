@@ -1,0 +1,136 @@
+Weapon override: let a player's hands swing a shapeshift form's weapons instead of their own.
+
+Made against AzerothCore rev b3717c137710. Adds Player::SetWeaponOverride / ClearWeaponOverride /
+GetWeaponOverride (three weapon templates held on the Player, memory only) and the
+COA_WEAPON_OVERRIDE macro. While set: HasWeaponForAttack follows the form's weapons (a dual-wield
+form swings both hands, a two-hander form never an off hand), weapon skill is full for the level,
+normalized speed uses the form weapon, off-hand damage refreshes without Dual Wield, and swings
+train no weapon skill. Equipped items keep enchants, procs, durability and item-dependent auras.
+Optional for mod-shapeshift.
+
+Apply from the core source root: git apply --check, then git apply.
+
+diff --git a/src/server/game/Entities/Player/Player.h b/src/server/game/Entities/Player/Player.h
+--- a/src/server/game/Entities/Player/Player.h
++++ b/src/server/game/Entities/Player/Player.h
+@@ -17,6 +17,9 @@
+ 
+ #ifndef _PLAYER_H
+ #define _PLAYER_H
++
++// Conquest of Azeroth: Player::SetWeaponOverride exists (server/patches/core-weapon-override.patch).
++#define COA_WEAPON_OVERRIDE 1
+ 
+ #include "ArenaTeam.h"
+ #include "Battleground.h"
+@@ -1278,7 +1281,33 @@
+     }
+     [[nodiscard]] Item* GetWeaponForAttack(WeaponAttackType attackType, bool useable = false) const;
+     bool HasWeapon(WeaponAttackType type) const override { return GetWeaponForAttack(type, false); }
+-    bool HasWeaponForAttack(WeaponAttackType type) const override { return (Unit::HasWeaponForAttack(type) && GetWeaponForAttack(type, true)); }
++    bool HasWeaponForAttack(WeaponAttackType type) const override
++    {
++        if (m_hasWeaponOverride)
++            return Unit::HasWeaponForAttack(type) && GetWeaponOverride(type);
++        return (Unit::HasWeaponForAttack(type) && GetWeaponForAttack(type, true));
++    }
++    // Conquest of Azeroth: while set, these weapon templates (nullptr: no weapon in that hand; weapons
++    // only) decide whether each hand swings, its skill (full for the level) and its normalized speed,
++    // and swings train no weapon skill. Equipped items keep enchants, procs, durability and
++    // item-dependent auras. Memory only; set and cleared by mod-shapeshift.
++    void SetWeaponOverride(ItemTemplate const* mainHand, ItemTemplate const* offHand, ItemTemplate const* ranged)
++    {
++        m_weaponOverride[BASE_ATTACK] = mainHand;
++        m_weaponOverride[OFF_ATTACK] = offHand;
++        m_weaponOverride[RANGED_ATTACK] = ranged;
++        m_hasWeaponOverride = true;
++    }
++    void ClearWeaponOverride()
++    {
++        m_weaponOverride[BASE_ATTACK] = m_weaponOverride[OFF_ATTACK] = m_weaponOverride[RANGED_ATTACK] = nullptr;
++        m_hasWeaponOverride = false;
++    }
++    [[nodiscard]] bool HasWeaponOverride() const { return m_hasWeaponOverride; }
++    [[nodiscard]] ItemTemplate const* GetWeaponOverride(WeaponAttackType type) const
++    {
++        return m_hasWeaponOverride && type < MAX_ATTACK ? m_weaponOverride[type] : nullptr;
++    }
+     [[nodiscard]] Item* GetShield(bool useable = false) const;
+     static WeaponAttackType GetAttackBySlot(uint8 slot);        // MAX_ATTACK if not weapon slot
+     std::vector<Item*>& GetItemUpdateQueue() { return m_itemUpdateQueue; }
+@@ -3008,6 +3037,8 @@
+     bool m_canParry;
+     bool m_canBlock;
+     bool m_canTitanGrip;
++    ItemTemplate const* m_weaponOverride[MAX_ATTACK] = {};  // Conquest of Azeroth, see SetWeaponOverride
++    bool m_hasWeaponOverride = false;
+     uint8 m_swingErrorMsg;
+     float m_ammoDPS;
+ 
+diff --git a/src/server/game/Entities/Unit/Unit.cpp b/src/server/game/Entities/Unit/Unit.cpp
+--- a/src/server/game/Entities/Unit/Unit.cpp
++++ b/src/server/game/Entities/Unit/Unit.cpp
+@@ -4167,6 +4167,9 @@
+     uint32 value = 0;
+     if (Player const* player = ToPlayer())
+     {
++        if (player->GetWeaponOverride(attType))
++            return GetMaxSkillValueForLevel();              // Conquest of Azeroth: a form's weapon
++
+         Item* item = player->GetWeaponForAttack(attType, true);
+ 
+         // feral or unarmed skill only for base attack
+@@ -14241,11 +14244,16 @@
+     if (!normalized || !IsPlayer())
+         return float(GetAttackTime(attType)) / 1000.0f;
+ 
+-    Item* Weapon = ToPlayer()->GetWeaponForAttack(attType, true);
+-    if (!Weapon)
++    Player const* player = ToPlayer();
++    ItemTemplate const* proto = nullptr;
++    if (player->HasWeaponOverride())
++        proto = player->GetWeaponOverride(attType);           // Conquest of Azeroth: a form's weapon
++    else if (Item* weapon = player->GetWeaponForAttack(attType, true))
++        proto = weapon->GetTemplate();
++    if (!proto)
+         return 2.4f;                                         // fist attack
+ 
+-    switch (Weapon->GetTemplate()->InventoryType)
++    switch (proto->InventoryType)
+     {
+         case INVTYPE_2HWEAPON:
+             return 3.3f;
+@@ -14257,7 +14265,7 @@
+         case INVTYPE_WEAPONMAINHAND:
+         case INVTYPE_WEAPONOFFHAND:
+         default:
+-            return Weapon->GetTemplate()->SubClass == ITEM_SUBCLASS_WEAPON_DAGGER ? 1.7f : 2.4f;
++            return proto->SubClass == ITEM_SUBCLASS_WEAPON_DAGGER ? 1.7f : 2.4f;
+     }
+ }
+ 
+diff --git a/src/server/game/Entities/Unit/StatSystem.cpp b/src/server/game/Entities/Unit/StatSystem.cpp
+--- a/src/server/game/Entities/Unit/StatSystem.cpp
++++ b/src/server/game/Entities/Unit/StatSystem.cpp
+@@ -631,7 +631,7 @@
+     else
+     {
+         UpdateDamagePhysical(BASE_ATTACK);
+-        if (CanDualWield() && HasOffhandWeaponForAttack()) //allow update offhand damage only if player knows DualWield Spec and has equipped offhand weapon
++        if ((CanDualWield() || HasWeaponOverride()) && HasOffhandWeaponForAttack()) //allow update offhand damage only if player knows DualWield Spec and has equipped offhand weapon (or a form's, Conquest of Azeroth)
+             UpdateDamagePhysical(OFF_ATTACK);
+         if (IsClass(CLASS_SHAMAN, CLASS_CONTEXT_STATS) || IsClass(CLASS_PALADIN, CLASS_CONTEXT_STATS))                      // mental quickness
+             UpdateSpellDamageAndHealingBonus();
+diff --git a/src/server/game/Entities/Player/PlayerUpdates.cpp b/src/server/game/Entities/Player/PlayerUpdates.cpp
+--- a/src/server/game/Entities/Player/PlayerUpdates.cpp
++++ b/src/server/game/Entities/Player/PlayerUpdates.cpp
+@@ -1032,6 +1032,9 @@
+     if (GetShapeshiftForm() == FORM_TREE)
+         return; // use weapon but not skill up
+ 
++    if (HasWeaponOverride())
++        return; // Conquest of Azeroth: a form's weapons train no real skill
++
+     if (victim->IsCreature() && victim->ToCreature()->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_SKILL_GAINS))
+         return;
+ 
