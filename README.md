@@ -17,7 +17,7 @@ A GM tool for AzerothCore (WotLK 3.3.5a) servers, built and tested on Conquest o
   do it on your stance bar (Zul'jin's five aspects), and weapon-swapping bosses swap too (Mr. Smite's
   scimitar, twin axes and hammer).
 - **162 skins** for the creature types: a white bear, a crimson harpy, a Frostwolf, a Defias pirate.
-- **Summons** that fight at your side, a 3D catalogue to browse and preview every form, favorites,
+- **a 3D catalogue** to browse and preview every form, favorites,
   search, and a size slider from pocket-sized to towering.
 - Balanced to your level, or Unleashed at the creature's full power.
 
@@ -39,8 +39,7 @@ logout do too.
   buttons for anything it misses).
 - If your server is newer than any source on the PC (a fresh repack, or a repack update), it prepares
   the repack's own source, and for the CoA-Bots server fetches the exact mod-playerbots it was built with.
-- Adds Shapeshifter to the source, stops your running server, builds a new one (at low priority,
-  so the PC stays usable), swaps it in, sets up the database, installs the class data and the addon,
+- Adds Shapeshifter to the source, stops your running server, builds a new one, swaps it in, sets up the database, installs the class data and the addon,
   and starts your server again.
 - Keeps a copy of everything it replaces in `backups/`, and carries your settings over from older
   versions.
