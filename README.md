@@ -1,5 +1,7 @@
 # Shapeshifter
 
+https://github.com/user-attachments/assets/fd4fc794-9fcb-429b-ad60-02c197c9ec0f
+
 **Ever wanted to stomp through Elwynn Forest as Ragnaros? Terrorize Durotar as Hogger? Tank a raid as
 the Lich King?** Shapeshifter turns you into the real thing: the boss's own model, name, size,
 abilities, gear and talents, on its own action bar, and back to yourself with one click.
