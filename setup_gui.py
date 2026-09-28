@@ -420,9 +420,14 @@ class App:
     # ---- running ---------------------------------------------------------------------------------
     def start(self, uninstall):
         what = "Uninstall" if uninstall else "Install"
-        if not uninstall and install.required_tools_missing(self.run_args()):
-            messagebox.showwarning(TITLE, "Get the build tools listed in the window first (Install ticked tools, "
-                                          "or their links and Check again).")
+        snapshot = self.run_args()
+        missing = [] if uninstall else install.required_tools_missing(snapshot)
+        if missing:                        # (the server picked here can need one the first check did not: the
+            self.tools_missing = missing   # repack's own MySQL client version)
+            self.open_tools(missing, lambda: install.required_tools_missing(snapshot))
+            messagebox.showwarning(TITLE, "This PC still needs: {}.\n\nTick it in the build tools window and click "
+                                          "Install ticked tools (or install it from its link and click Check again), "
+                                          "then Install.".format(", ".join(m[1] for m in missing)))
             return
         message = ("{} Shapeshifter now?\n\nIt will stop the server if it is running, patch it and rebuild it if its "
                    "code changed (ten minutes to an hour), put the new one in place and start it again. Replaced files go to "

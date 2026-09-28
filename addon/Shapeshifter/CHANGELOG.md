@@ -1,5 +1,10 @@
 # Shapeshifter changelog
 
+## 1.1.2 (2026-09-28)
+- FIX: Setup finds a stopped server in a repack unpacked deep in Downloads, Desktop or Documents (Downloads\CoA-Repack-<date>\CoA-Repack\CoA-Bots\Core). Before, it was found only while running.
+- FIX: When the server you pick needs a build tool the first check did not (the exact MySQL client its repack ships), Install names it and opens the build tools window, instead of pointing at a window that was not there.
+- FIX: A repack whose Core folder lost its MySQL library is still built against the MySQL client the repack shipped.
+
 ## 1.1.1 (2026-09-28)
 - FIX: On a CoA repack running CoA-Bots, the new server no longer stops at startup ("world stopped during startup") when the PC already had another MySQL installed. CoA-Bots puts the repack's own MySQL library back at every start, so Setup now builds against the exact MySQL client the repack ships (and downloads it when the PC lacks it). Setup also refuses to put in a server that would stop that way, and leaves yours untouched.
 - ADD: Setup keeps the whole log of its last run in setup.log beside it, to send along when something goes wrong.

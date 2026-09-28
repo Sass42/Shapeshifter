@@ -35,7 +35,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 HERE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 PATCHES = HERE / "patches"
 MODULE = HERE / "module" / "mod-shapeshifter"
@@ -1001,8 +1001,13 @@ def discover(ui, args, ask_missing=True):
     roots = drive_roots()
     if not args.server:
         running = [exe for _, exe in list_processes((WORLDSERVER,))]
-        found = scan(roots, lambda f: (f / WORLDSERVER).is_file() and find_conf(f / WORLDSERVER) is not None, depth=4,
-                     skip=SKIP + ("Program Files", "Program Files (x86)"))
+        is_server = lambda f: (f / WORLDSERVER).is_file() and find_conf(f / WORLDSERVER) is not None  # noqa: E731
+        # A downloaded repack sits deep (Downloads\CoA-Repack-<date>\CoA-Repack\CoA-Bots\Core is six levels
+        # below C:\): the player's own folders are searched as deep as that, then every disk from its root.
+        home = Path.home()
+        found = scan([home / "Downloads", home / "Desktop", home / "Documents"], is_server, depth=4)
+        found += [f for f in scan(roots, is_server, depth=4, skip=SKIP + ("Program Files", "Program Files (x86)"))
+                  if f not in found]
         server = pick_server(ui, rank_servers(running, [f / WORLDSERVER for f in found]), running)
         args.server = str(server) if server else None
     repack = repack_of(args.server) if args.server else None
@@ -1169,7 +1174,10 @@ def aim_mysql(args):
     global MYSQL_WANTED
     repack = repack_of(args.server) if getattr(args, "prepare_source", False) and getattr(args, "server", None) \
         else None
-    MYSQL_WANTED = dll_version_text(repack["root"] / "Core" / "libmysql.dll") if repack else None
+    if repack:                    # a repack whose Core lost its DLL still needs the client it shipped
+        MYSQL_WANTED = dll_version_text(repack["root"] / "Core" / "libmysql.dll") or MYSQL_VERSION
+    else:
+        MYSQL_WANTED = None
     return MYSQL_WANTED
 
 

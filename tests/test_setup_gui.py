@@ -247,3 +247,18 @@ def test_every_line_of_a_run_is_saved_to_setup_log(tmp_path, monkeypatch):
     writer.close()
     assert log.read_text(encoding="utf-8") == "error C2039: 'Foo' is not a member\nbuild FAILED\n"
     assert lines.get_nowait().startswith("error C2039")
+
+
+def test_install_opens_the_tools_window_for_a_tool_the_chosen_server_needs(root, tmp_path, monkeypatch):
+    core, client, discover = fake_find(tmp_path)
+    monkeypatch.setattr(install, "discover", discover)
+    app = setup_gui.App(root)
+    assert settle(root, lambda: not app.busy)
+    assert app.tools_window is None                         # nothing missing at first
+    mysql = ("mysql", "MySQL 8.4.9 client library", "the database connection", "https://dev.mysql.com/downloads/mysql/")
+    monkeypatch.setattr(install, "required_tools_missing", lambda args: [mysql])   # the repack Browsed to needs it
+    warned = []
+    monkeypatch.setattr(setup_gui.messagebox, "showwarning", lambda title, text: warned.append(text))
+    monkeypatch.setattr(setup_gui.messagebox, "askyesno", lambda *a: pytest.fail("no install without the tool"))
+    app.start(uninstall=False)
+    assert app.tools_window is not None and "MySQL 8.4.9 client library" in warned[0]

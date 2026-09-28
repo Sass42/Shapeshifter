@@ -1348,3 +1348,22 @@ def test_the_server_step_refuses_a_worldserver_coa_bots_would_break(tmp_path, ba
     args = ["--only", "server", "--core", str(core), "--build", str(build), "--server", str(live.parent)]
     assert install.main(["--step-by-step"] + args, answers=["", "y"]) == 1
     assert live.read_bytes() == b"old binary"
+
+
+def test_a_repack_that_lost_its_mysql_dll_still_aims_at_the_shipped_client(tmp_path, monkeypatch):
+    root = fake_repack(tmp_path, monkeypatch)
+    (root / "Core" / "libmysql.dll").unlink()
+    assert install.aim_mysql(argparse.Namespace(server="x", prepare_source=True)) == install.MYSQL_VERSION
+
+
+def test_a_stopped_repack_server_deep_in_downloads_is_found(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    core = home / "Downloads" / "CoA-Repack-20260925" / "CoA-Repack" / "CoA-Bots" / "Core"
+    (core / "configs").mkdir(parents=True)
+    (core / install.WORLDSERVER).write_bytes(b"")
+    (core / "configs" / "worldserver.conf").write_text("")
+    monkeypatch.setattr(install, "drive_roots", lambda: [tmp_path / "empty-disk"])
+    monkeypatch.setattr(install.Path, "home", classmethod(lambda cls: home))
+    args = argparse.Namespace(core=None, build=None, server=None, client=None, mysql=None, bots=None)
+    install.discover(install.Ui(False, []), args, ask_missing=False)
+    assert args.server == str(core / install.WORLDSERVER)
