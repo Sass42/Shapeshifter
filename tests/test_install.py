@@ -32,6 +32,7 @@ def nothing_running(monkeypatch):
     """The steps wait while the game or a server runs on this PC; tests see none unless they say so
     (a test once waited forever while the maintainer played)."""
     monkeypatch.setattr(install, "list_processes", lambda names: [])
+    monkeypatch.setattr(install, "MYSQL_WANTED", None)       # set per run by aim_mysql; never leaks between tests
 
 
 @pytest.fixture
@@ -1251,3 +1252,99 @@ def test_an_uninstall_without_a_build_of_its_own_puts_the_repacks_server_back(tm
         assert install.UNDO_FUNCS[step](ui, args) is True
     assert install.UNDO_FUNCS["server"](ui, args) is True
     assert exe.read_bytes() == b"old" and (exe.parent / "libmysql.dll").read_bytes() == b"client 8.4.9"
+
+
+# ---- a repack build uses the repack's own MySQL client (2026-09-28: CoA-Bots swapped it back) ---------
+
+def make_mysql_dev(root, version):
+    (root / "include").mkdir(parents=True)
+    (root / "include" / "mysql.h").write_text("")
+    (root / "include" / "mysql_version.h").write_text('#define LIBMYSQL_VERSION           "{}"\n'.format(version))
+    (root / "lib").mkdir()
+    (root / "lib" / "libmysql.lib").write_text("")
+    return root
+
+
+def fake_repack(tmp_path, monkeypatch, bots=True):
+    root = tmp_path / "repack"
+    (root / "Core").mkdir(parents=True, exist_ok=True)
+    (root / "Core" / "libmysql.dll").write_bytes(b"repack client 8.4.9")
+    monkeypatch.setattr(install, "repack_of", lambda exe: {"root": root, "bots": bots})
+    return root
+
+
+def test_a_repack_build_aims_at_the_repacks_mysql_client(tmp_path, monkeypatch):
+    fake_repack(tmp_path, monkeypatch)
+    monkeypatch.setattr(install, "file_version", lambda path: (8, 4, 9, 0))
+    assert install.aim_mysql(argparse.Namespace(server="x", prepare_source=True)) == "8.4.9"
+    assert install.aim_mysql(argparse.Namespace(server="x", prepare_source=False)) is None   # the player's own build
+
+
+def test_only_the_wanted_mysql_client_counts(tmp_path, monkeypatch):
+    local = tmp_path / "local"
+    other = make_mysql_dev(local / "mysql-8.4.11-winx64", "8.4.11")
+    monkeypatch.setattr(install, "LOCAL", local)
+    monkeypatch.setenv("ProgramW6432", str(tmp_path / "no-programs"))
+    seed = {"MYSQL_INCLUDE_DIR": str(other / "include"), "MYSQL_LIBRARY": str(other / "lib" / "libmysql.lib")}
+    assert install.mysql_dev(seed)[0] == other / "include"                 # nothing wanted: any MySQL
+    monkeypatch.setattr(install, "MYSQL_WANTED", "8.4.9")
+    assert install.mysql_dev(seed) is None and not install.tool_present("mysql", seed)
+    _, name, _, _, how = install.tool_spec("mysql")
+    assert name == "MySQL 8.4.9 client library"
+    assert how[1][0] == "https://cdn.mysql.com/archives/mysql-8.4/mysql-8.4.9-winx64.zip"
+    wanted = make_mysql_dev(local / "mysql-8.4.9-winx64", "8.4.9")
+    assert install.mysql_dev(seed) == (wanted / "include", wanted / "lib" / "libmysql.lib")
+
+
+def test_a_mysql_client_download_falls_back_to_the_current_releases(tmp_path, monkeypatch):
+    import zipfile
+    monkeypatch.setattr(install, "MYSQL_WANTED", "8.4.9")
+    monkeypatch.setattr(install, "LOCAL", tmp_path / "local")
+    tried = []
+
+    def download(url, target):
+        tried.append(url)
+        if "/archives/" in url:
+            raise install.urllib.error.URLError("404")
+        with zipfile.ZipFile(str(target), "w") as archive:
+            archive.writestr("mysql-8.4.9-winx64/include/mysql.h", "")
+    monkeypatch.setattr(install, "download", download)
+    monkeypatch.setattr(install, "tool_present", lambda key, seed=None: True)
+    assert install.install_tool(install.Ui(False, []), "mysql") is True
+    assert tried[1] == "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.9-winx64.zip"
+    assert (tmp_path / "local" / "mysql-8.4.9-winx64" / "include" / "mysql.h").is_file()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows servers")
+def test_a_coa_bots_server_is_not_given_a_mysql_client_coa_bots_would_swap(tmp_path, monkeypatch):
+    root = fake_repack(tmp_path, monkeypatch)
+    mysql = make_mysql(tmp_path / "mysql")                                  # b"client 8.4.11": another size
+    cache = {"MYSQL_LIBRARY": str(mysql / "lib" / "libmysql.lib")}
+    versions = {root / "Core" / "libmysql.dll": (8, 4, 9, 0), mysql / "lib" / "libmysql.dll": (8, 4, 11, 0)}
+    monkeypatch.setattr(install, "file_version", lambda path: versions.get(Path(path), (0,)))
+    target = tmp_path / "bots" / install.WORLDSERVER
+    why = install.mysql_mismatch(cache, target)
+    assert "8.4.11" in why and "8.4.9" in why
+    (mysql / "lib" / "libmysql.dll").write_bytes(b"repack client 8.411")     # same size: CoA-Bots leaves it
+    assert install.mysql_mismatch(cache, target) is None
+    fake_repack(tmp_path, monkeypatch, bots=False)                           # the repack's own server: no swap
+    (mysql / "lib" / "libmysql.dll").write_bytes(b"client 8.4.11")
+    assert install.mysql_mismatch(cache, target) is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows servers")
+def test_the_server_step_refuses_a_worldserver_coa_bots_would_break(tmp_path, backups, monkeypatch):
+    core = make_core(tmp_path / "core")
+    build = make_built(tmp_path)
+    mysql = make_mysql(tmp_path / "mysql")
+    (build / "CMakeCache.txt").write_text("CMAKE_GENERATOR:INTERNAL=Visual Studio 17 2022\n"
+                                          "MYSQL_LIBRARY:FILEPATH={}\n".format((mysql / "lib" / "libmysql.lib").as_posix()))
+    live = tmp_path / "server" / install.WORLDSERVER
+    live.parent.mkdir()
+    live.write_bytes(b"old binary")
+    root = fake_repack(tmp_path, monkeypatch)
+    versions = {root / "Core" / "libmysql.dll": (8, 4, 9, 0), mysql / "lib" / "libmysql.dll": (8, 4, 11, 0)}
+    monkeypatch.setattr(install, "file_version", lambda path: versions.get(Path(path), (0,)))
+    args = ["--only", "server", "--core", str(core), "--build", str(build), "--server", str(live.parent)]
+    assert install.main(["--step-by-step"] + args, answers=["", "y"]) == 1
+    assert live.read_bytes() == b"old binary"

@@ -19,18 +19,33 @@ import install
 TITLE = "Shapeshifter Setup {}".format(install.VERSION)
 
 
+LOG_FILE = install.HERE / "setup.log"      # the last run's whole log, to send along when something fails
+
+
 class LogWriter:
-    """sys.stdout for the worker thread: every print goes to the window's log."""
+    """sys.stdout for the worker thread: every print goes to the window's log and to setup.log."""
 
     def __init__(self, lines):
         self.lines = lines
+        try:
+            self.file = open(str(LOG_FILE), "w", encoding="utf-8", errors="replace")
+        except OSError:
+            self.file = None
 
     def write(self, text):
         if text:
             self.lines.put(text)
+            if self.file:
+                self.file.write(text)
 
     def flush(self):
-        pass
+        if self.file:
+            self.file.flush()
+
+    def close(self):
+        if self.file:
+            self.file.close()
+            self.file = None
 
 
 class WindowUi(install.Ui):

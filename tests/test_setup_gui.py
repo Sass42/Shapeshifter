@@ -13,6 +13,12 @@ import install  # noqa: E402
 import setup_gui  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def log_elsewhere(tmp_path, monkeypatch):
+    """A run's setup.log goes to the test's folder, not beside the real Setup."""
+    monkeypatch.setattr(setup_gui, "LOG_FILE", tmp_path / "setup.log")
+
+
 @pytest.fixture
 def root():
     try:
@@ -229,3 +235,15 @@ def test_closing_the_tools_window_leaves_install_off(root, tmp_path, monkeypatch
     assert settle(root, lambda: app.tools_window is not None and not app.busy)   # it comes back after the search
     assert str(app.install_btn.cget("state")) == "disabled"
     assert str(app.uninstall_btn.cget("state")) == "normal"
+
+def test_every_line_of_a_run_is_saved_to_setup_log(tmp_path, monkeypatch):
+    import queue
+    log = tmp_path / "setup.log"
+    monkeypatch.setattr(setup_gui, "LOG_FILE", log)
+    lines = queue.Queue()
+    writer = setup_gui.LogWriter(lines)
+    writer.write("error C2039: 'Foo' is not a member\n")
+    writer.write("build FAILED\n")
+    writer.close()
+    assert log.read_text(encoding="utf-8") == "error C2039: 'Foo' is not a member\nbuild FAILED\n"
+    assert lines.get_nowait().startswith("error C2039")

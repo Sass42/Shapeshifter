@@ -1,5 +1,9 @@
 # Shapeshifter changelog
 
+## 1.1.1 (2026-09-28)
+- FIX: On a CoA repack running CoA-Bots, the new server no longer stops at startup ("world stopped during startup") when the PC already had another MySQL installed. CoA-Bots puts the repack's own MySQL library back at every start, so Setup now builds against the exact MySQL client the repack ships (and downloads it when the PC lacks it). Setup also refuses to put in a server that would stop that way, and leaves yours untouched.
+- ADD: Setup keeps the whole log of its last run in setup.log beside it, to send along when something goes wrong.
+
 ## 1.1.0 Beta (2026-09-28)
 - ADD: Archetype types: 15 archetypes gain 36 real types with their own abilities, talents and gear, as buttons on the archetype's look row. Necromancer (Bone, Frost, Plague, Shadow), bear (Plagued, Grizzly, Ice, War bear), spider (Crystal, Widow, Plague, Trapper), dragonspawn (Black, Blue, Green, Bronze), ancient protector (Ancient, Stonebark, Brightleaf, Ironbranch), giant (Stone, Frost), air (Gale, Storm, Dust), earth (Rock, Ice, Crystal) and water elementals (Tide, Fouled, Mojo), defias (Pillager, Footpad, Pirate, Overseer), vrykul (Berserker, Rune-Seer, Ymirjar, Harpooner), ghoul (Frigid, Volatile), treant (Oak, Withered, Crystal, Tender), dryad (Nymph) and moonkin (Owlbeast, Wildkin). Recolour-only looks were trimmed to make room.
 - ADD: Voice lines: in a form whose creature really speaks, a board above the chat window lists its lines (203 forms, up to 12 each). Click one and everyone near hears it and reads it, said or yelled as the creature does. A line can't start until the last one has finished.

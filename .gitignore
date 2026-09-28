@@ -4,3 +4,4 @@ build_exe.log
 build_exe/
 dist/
 .pytest_cache/
+setup.log

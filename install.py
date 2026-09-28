@@ -23,6 +23,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -34,7 +35,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 HERE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 PATCHES = HERE / "patches"
 MODULE = HERE / "module" / "mod-shapeshifter"
@@ -192,6 +193,25 @@ def find_built(build, config):
         if candidate.is_file():
             return candidate
     return None
+
+
+def mysql_mismatch(cache, target):
+    """Why a worldserver built against the cache's MySQL cannot start in a CoA-Bots server, or None.
+    CoA-Bots copies the repack's Core\\libmysql.dll over its own at every start unless the sizes match,
+    and a worldserver behind a client DLL of another version stops at startup (ACE00046)."""
+    repack = repack_of(target)
+    dll = mysql_client_dll(cache) if cache else None
+    if os.name != "nt" or not repack or not repack["bots"] or not dll:
+        return None
+    shipped = repack["root"] / "Core" / "libmysql.dll"
+    if not shipped.is_file() or dll.stat().st_size == shipped.stat().st_size \
+            or file_version(dll) == file_version(shipped):
+        return None
+    want = dll_version_text(shipped) or "?"
+    return ("this worldserver was built against MySQL client {} but the repack ships {}. CoA-Bots puts the "
+            "repack's libmysql.dll back at every start, and the server would stop at startup. Nothing was "
+            "changed on your server: run Setup again and it rebuilds against MySQL {}.").format(
+        dll_version_text(dll) or "?", want, want)
 
 
 def mysql_client_dll(cache):
@@ -1117,6 +1137,40 @@ MYSQL_VERSION = "8.4.9"                    # the MySQL client the CoA repack shi
 LOCAL = Path(os.environ.get("SystemDrive", "C:") + "\\") / "local"   # where Boost and MySQL go (no admin needed)
 ORIGINAL = "shapeshifter-original"     # beside the server: the repack's own worldserver, kept for uninstall
 ORIGINAL_FILES = (WORLDSERVER, "libmysql.dll", "worldserver.pdb")
+MYSQL_WANTED = None                        # the MySQL client version this run's build must use (aim_mysql)
+
+
+def mysql_target():
+    """The MySQL client version Setup installs: the repack's (aim_mysql), else MYSQL_VERSION."""
+    return MYSQL_WANTED or MYSQL_VERSION
+
+
+def mysql_header_version(include):
+    """The client version ("8.4.9") a MySQL include folder declares (mysql_version.h), or None."""
+    try:
+        text = (Path(include) / "mysql_version.h").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(r'#define\s+LIBMYSQL_VERSION\s+"([\d.]+)"', text)
+    return match.group(1) if match else None
+
+
+def dll_version_text(path):
+    """"8.4.9" for a DLL whose file version is 8.4.9.0, or None."""
+    version = file_version(path) if Path(path).is_file() else (0,)
+    return ".".join(str(n) for n in version[:3]) if version[0] else None
+
+
+def aim_mysql(args):
+    """A server compiled from a repack's source must use the MySQL client the repack ships: CoA-Bots
+    copies the repack's Core\\libmysql.dll over its own at every start (when the sizes differ), and a
+    worldserver behind a client DLL of another version stops at startup (ACE00046). Sets and returns
+    MYSQL_WANTED (None: any MySQL will do)."""
+    global MYSQL_WANTED
+    repack = repack_of(args.server) if getattr(args, "prepare_source", False) and getattr(args, "server", None) \
+        else None
+    MYSQL_WANTED = dll_version_text(repack["root"] / "Core" / "libmysql.dll") if repack else None
+    return MYSQL_WANTED
 
 
 def boost_root(seed=None):
@@ -1139,14 +1193,19 @@ def openssl_root(seed=None):
 
 
 def mysql_dev(seed=None):
-    """(include folder, libmysql.lib) of a MySQL with its client library, or None."""
+    """(include folder, libmysql.lib) of a MySQL with its client library, or None. With MYSQL_WANTED
+    set (aim_mysql), only that exact client version counts."""
+    def fits(include):
+        return not MYSQL_WANTED or mysql_header_version(include) == MYSQL_WANTED
     seed = seed or {}
-    if seed.get("MYSQL_INCLUDE_DIR") and Path(seed.get("MYSQL_LIBRARY", "")).is_file():
+    if seed.get("MYSQL_INCLUDE_DIR") and Path(seed.get("MYSQL_LIBRARY", "")).is_file() \
+            and fits(seed["MYSQL_INCLUDE_DIR"]):
         return Path(seed["MYSQL_INCLUDE_DIR"]), Path(seed["MYSQL_LIBRARY"])
     programs = Path(os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles", r"C:\Program Files"))
     for root in sorted(LOCAL.glob("mysql-*"), reverse=True) + sorted(programs.glob("MySQL/MySQL Server *"),
                                                                      reverse=True):
-        if (root / "include" / "mysql.h").is_file() and (root / "lib" / "libmysql.lib").is_file():
+        if (root / "include" / "mysql.h").is_file() and (root / "lib" / "libmysql.lib").is_file() \
+                and fits(root / "include"):
             return root / "include", root / "lib" / "libmysql.lib"
     return None
 
@@ -1172,10 +1231,23 @@ BUILD_TOOLS = (
       .format(v=BOOST_VERSION, u=BOOST_VERSION.replace(".", "_")), "inno")),
     ("openssl", "OpenSSL (full, not Light)", "encryption for logins", "https://slproweb.com/products/Win32OpenSSL.html",
      ("winget", "ShiningLight.OpenSSL.Dev", [])),
-    ("mysql", "MySQL " + MYSQL_VERSION + " client library", "the database connection; about 280 MB, no service",
+    ("mysql", "MySQL {v} client library", "the database connection; about 280 MB, no service",
      "https://dev.mysql.com/downloads/mysql/",
-     ("download", "https://cdn.mysql.com/archives/mysql-8.4/mysql-{v}-winx64.zip".format(v=MYSQL_VERSION), "zip")),
+     ("download", ("https://cdn.mysql.com/archives/mysql-{mm}/mysql-{v}-winx64.zip",
+                   "https://cdn.mysql.com/Downloads/MySQL-{mm}/mysql-{v}-winx64.zip"), "zip")),
 )
+
+
+def tool_spec(key):
+    """A BUILD_TOOLS entry with the MySQL version filled in (mysql_target)."""
+    spec = next(t for t in BUILD_TOOLS if t[0] == key)
+    if key != "mysql":
+        return spec
+    v = mysql_target()
+    mm = ".".join(v.split(".")[:2])
+    how = spec[4]
+    return (key, spec[1].format(v=v), spec[2], spec[3],
+            (how[0], tuple(u.format(v=v, mm=mm) for u in how[1]), how[2]))
 
 
 def tool_present(key, seed=None):
@@ -1198,7 +1270,8 @@ def tool_present(key, seed=None):
 
 def missing_build_tools(seed=None):
     """[(key, name, why, page)] of the build tools this PC lacks."""
-    return [(key, name, why, page) for key, name, why, page, _ in BUILD_TOOLS if not tool_present(key, seed)]
+    return [(key, name, why, page) for key, name, why, page, _ in (tool_spec(t[0]) for t in BUILD_TOOLS)
+            if not tool_present(key, seed)]
 
 
 def found_dev_flags(seed=None):
@@ -1236,8 +1309,7 @@ def download(url, target):
 def install_tool(ui, key):
     """Downloads and installs one build tool. True when it is there afterwards. Windows asks for
     administrator rights for the ones that install for every user."""
-    spec = next(t for t in BUILD_TOOLS if t[0] == key)
-    _, name, _, page, how = spec
+    _, name, _, page, how = tool_spec(key)
     print("\n   installing {}".format(name))
     if ui.dry_run:
         print("   (dry run) would install it")
@@ -1249,16 +1321,20 @@ def install_tool(ui, key):
         run(ui, ["winget", "install", "--exact", "--id", how[1], "--silent", "--accept-package-agreements",
                  "--accept-source-agreements", "--disable-interactivity"] + how[2])
     else:
-        url, kind = how[1], how[2]
+        urls, kind = (how[1] if isinstance(how[1], tuple) else (how[1],)), how[2]
         work = Path(tempfile.mkdtemp(prefix="shapeshifter-tool-"))
         try:
-            file = work / url.rsplit("/", 1)[-1]
-            print("   downloading {}".format(url))
-            try:
-                download(url, file)
-            except (urllib.error.URLError, OSError) as error:
-                print("   the download failed ({}). Get it from {}".format(getattr(error, "reason", error), page))
-                return False
+            file = work / urls[0].rsplit("/", 1)[-1]
+            for i, url in enumerate(urls):      # a MySQL release is in the archive, or (while current) not yet
+                print("   downloading {}".format(url))
+                try:
+                    download(url, file)
+                    break
+                except (urllib.error.URLError, OSError) as error:
+                    if i + 1 == len(urls):
+                        print("   the download failed ({}). Get it from {}".format(
+                            getattr(error, "reason", error), page))
+                        return False
             if kind == "zip":
                 print("   unpacking into {}".format(LOCAL))
                 LOCAL.mkdir(parents=True, exist_ok=True)
@@ -1364,6 +1440,7 @@ def required_tools_missing(args):
         return []
     if not getattr(args, "prepare_source", False) and not getattr(args, "build", None):
         return []
+    aim_mysql(args)
     return missing_build_tools(build_seed(args))
 
 
@@ -1454,6 +1531,7 @@ def ensure_build_tools(ui, args):
     """Installs the build tools this PC lacks that the player chose (args.install_tools: the window's
     checklist; asked here otherwise), then checks again. False, with nothing changed, when any is
     still missing."""
+    aim_mysql(args)
     seed = build_seed(args)
     missing = missing_build_tools(seed)
     if not missing:
@@ -1513,6 +1591,9 @@ def step_source(ui, args):
     print("   configuring {} (like the build already on this PC, Release)".format(build))
     seed = getattr(args, "seed", None) or {}
     flags = seed_flags(seed)
+    if aim_mysql(args):                 # the repack's MySQL client, whichever one the seed build used
+        print("   building against MySQL {}, the client the repack ships".format(MYSQL_WANTED))
+        flags = [f for f in flags if not f.startswith(("-DMYSQL_INCLUDE_DIR=", "-DMYSQL_LIBRARY="))]
     flags += [f for f in found_dev_flags(seed) if not any(g.split("=")[0] == f.split("=")[0] for g in flags)]
     flags.append("-DCMAKE_BUILD_TYPE=Release")
     if run(ui, ["cmake", "-S", source, "-B", build] + flags) != 0:
@@ -1745,6 +1826,11 @@ def step_server(ui, args):
                    "CoA-Bots box), or uninstall before starting CoA-Bots.")
         print("   Note: " + warning)
         ui.note(warning)
+    mismatch = mysql_mismatch(cache, target)
+    if mismatch:
+        print("   Not installed: " + mismatch)
+        ui.note("Not installed: " + mismatch)
+        return False
     if not ui.confirm("   Replace the live worldserver?"):
         return None
     server = getattr(args, "server_ctl", None)
