@@ -10,7 +10,7 @@ A GM tool for AzerothCore (WotLK 3.3.5a) servers, built and tested on Conquest o
 
 - **569 Forms**, about 475 characters to become: 159 classic dungeon bosses, 50 classic raid bosses,
   59 from The Burning Crusade, 83 from Wrath of the Lich King, 34 faction leaders, 26 rare elites and
-  66 creature types, from gnolls and murlocs to frost wyrms.
+  65 creature types, from gnolls and murlocs to frost wyrms.
 - **Actually become the character**: its own spells with player cast bars, cooldowns and tooltips, its
   own resource (rage, energy or mana), its own gear on your character sheet, and a talent panel.
 - **Their voices**: forms whose creature really speaks get a board of its lines (203 forms); click
@@ -31,7 +31,8 @@ A GM tool for AzerothCore (WotLK 3.3.5a) servers, built and tested on Conquest o
 3. If build tools are missing, a **Build tools needed first** window lists them: tick the ones Setup
    should install (or install them from their links and click **Check again**), then **Continue**.
 4. Check what it found, tick **Install for CoA-Bots Server** if that is your server (it ticks itself
-   when it sees one running), and click **Install**.
+   when the server it finds is the CoA-Bots one, `CoA-Repack\CoA-Bots\Core\worldserver.exe`), and
+   click **Install**.
 
 That's it. Setup does the rest, and tells you when it is done. Then log in on a GM account and click the minimap button (or type
 `/ss`) to open the catalogue. The menu button or `/ss revert` turns you back; death and
@@ -48,20 +49,24 @@ logout do too.
 - If your server is newer than any source on the PC (a fresh repack, or a repack update), it prepares
   the repack's own source, and for the CoA-Bots server fetches the exact mod-playerbots it was built
   with; it adds Shapeshifter to the source and builds a new server, and puts the DLLs that server needs
-  beside it.
+  beside it. A CoA repack's server is built against the exact MySQL client the repack ships, even
+  when your PC has another MySQL (Setup installs that one into `C:\local`, next to yours).
 - Stops your running server, swaps the new one in, sets up the database, installs the class data and
   the addon, and starts your server again.
 - Keeps a copy of everything it replaces in `backups/`, and carries your settings over from older
   versions.
 
 **You need:** Windows 10 or 11 and an internet connection. The build tools (Git, CMake, Visual Studio
-Build Tools with C++, Boost, OpenSSL and the MySQL client library) are checked for first, and Setup can
-install the missing ones for you. On a PC that never built a server, that is a one-time download of
-several GB (mostly Visual Studio) that can take an hour, plus the first build. If you have built your
-server before, you already have them.
+Build Tools with C++, Boost, OpenSSL and the MySQL client library, for a CoA repack the exact version
+it ships) are checked for first, and Setup can install the missing ones for you. On a PC that never
+built a server, that is a one-time download of several GB (mostly Visual Studio) that can take an
+hour, plus the first build. If you have built your server before, you already have most of them.
 
 **Uninstall:** open Setup and click **Uninstall**. Everything is put back the way it was, and what it
 takes out is kept in `backups/`.
+
+**If something goes wrong:** Setup keeps the whole log of its last run in `setup.log`, next to
+`Shapeshifter Setup.exe`. Send that file along with your report.
 
 ## Why it needs a server build
 
