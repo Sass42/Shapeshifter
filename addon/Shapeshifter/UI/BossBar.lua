@@ -48,7 +48,47 @@ for i = 1, 12 do
         end
     end)
     b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    -- Drag an ability onto another slot to swap them (user, 2026-09-27: customise the hotbar), out of
+    -- combat; the layout is kept per form. A click still casts: only a drag moves.
+    b:RegisterForDrag("LeftButton")
+    b.index = i
     buttons[i] = b
+end
+
+local Layout                        -- set below: swaps two slots of the current form's layout
+local dragFrom = nil
+local dragIcon = UIParent:CreateTexture(nil, "OVERLAY")
+dragIcon:SetSize(SIZE, SIZE)
+dragIcon:Hide()
+local dragger = CreateFrame("Frame")
+dragger:Hide()
+dragger:SetScript("OnUpdate", function()
+    local x, y = GetCursorPosition()
+    local scale = UIParent:GetEffectiveScale()
+    dragIcon:ClearAllPoints()
+    dragIcon:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / scale, y / scale)
+end)
+
+for _, b in ipairs(buttons) do
+    b:SetScript("OnDragStart", function(self)
+        if InCombatLockdown() or not self.spellId then
+            return
+        end
+        dragFrom = self.index
+        dragIcon:SetTexture(self.icon:GetTexture())
+        dragIcon:Show()
+        dragger:Show()
+    end)
+    b:SetScript("OnDragStop", function(self)
+        local from = dragFrom
+        dragFrom = nil
+        dragIcon:Hide()
+        dragger:Hide()
+        local over = GetMouseFocus and GetMouseFocus()
+        if from and over and over.index and buttons[over.index] == over and over.index ~= from then
+            Layout(from, over.index)
+        end
+    end)
 end
 
 -- A form's shapes (user, 2026-09-24): like a druid's forms, one button per shape on a stance bar
@@ -338,6 +378,33 @@ local function HideRealBar()
     HideOwnBars()
 end
 
+-- The keys of your other bars and bar pages still reach your own abilities while those bars are
+-- hidden (user, 2026-09-27: none of your own abilities in a form): in form they press a button
+-- that does nothing.
+local noop = CreateFrame("Button", "ShapeshiftBossNoop", bar)
+local BLOCKED = { "NEXTACTIONPAGE", "PREVIOUSACTIONPAGE" }
+for i = 1, 12 do
+    for _, name in ipairs({ "MULTIACTIONBAR1BUTTON", "MULTIACTIONBAR2BUTTON", "MULTIACTIONBAR3BUTTON",
+                            "MULTIACTIONBAR4BUTTON", "BONUSACTIONBUTTON" }) do
+        BLOCKED[#BLOCKED + 1] = name .. i
+    end
+end
+for i = 1, 6 do
+    BLOCKED[#BLOCKED + 1] = "ACTIONPAGE" .. i
+end
+
+local function BlockOwnKeys()
+    for _, name in ipairs(BLOCKED) do
+        local key1, key2 = GetBindingKey(name)
+        if key1 then
+            SetOverrideBindingClick(bar, true, key1, "ShapeshiftBossNoop")
+        end
+        if key2 then
+            SetOverrideBindingClick(bar, true, key2, "ShapeshiftBossNoop")
+        end
+    end
+end
+
 local function Clear()
     ClearOverrideBindings(bar)
     bar:Hide()
@@ -354,7 +421,7 @@ end
 local function Build(kit)
     local slotOf, book = ScanSpellbook()
     local inKit = {}
-    for _, id in ipairs(kit) do
+    for _, id in pairs(kit) do          -- slot -> spell id; a laid-out bar may leave gaps
         inKit[id] = true
     end
     local ownNames = {}
@@ -366,6 +433,7 @@ local function Build(kit)
     local info = { ownNames = ownNames, hasCastByID = type(CastSpellByID) == "function" }
 
     ClearOverrideBindings(bar)
+    BlockOwnKeys()                  -- first, so a key also bound to an ACTIONBUTTON ends on ours
     for i, b in ipairs(buttons) do
         local id = kit[i]
         if id then
@@ -401,7 +469,14 @@ end
 
 local pending = nil
 
--- The bar holds the kit, then the current weapon stance's own abilities (deep pass B2).
+-- The bar holds the kit, then the current weapon stance's own abilities (deep pass B2), in the
+-- player's own layout for this form where they set one (ShapeshifterDB.barLayout[form id]: slot ->
+-- spell id). An ability the layout does not place fills the first free slot.
+local function LayoutKey()
+    local form = Shapeshift.CurrentForm and Shapeshift.CurrentForm()
+    return form and form.id
+end
+
 local function BarKit(state)
     local kit = {}
     for _, id in ipairs(state.kit or {}) do
@@ -410,7 +485,8 @@ local function BarKit(state)
     for _, id in ipairs(state.stanceKit or {}) do
         kit[#kit + 1] = id
     end
-    return kit
+    return CastPlan.ArrangeBar(kit, ShapeshifterDB and ShapeshifterDB.barLayout
+        and ShapeshifterDB.barLayout[LayoutKey() or ""], #buttons)
 end
 
 local function Update(state)
@@ -421,7 +497,7 @@ local function Update(state)
     end
     pending = nil
     local kit = BarKit(state)
-    if state.active and not state.look and #kit > 0 then
+    if state.active and not state.look and next(kit) then
         Build(kit)
     else
         Clear()
@@ -469,6 +545,36 @@ local function UpdateUsable()
 end
 
 Shapeshift.OnStateChange(Update)
+
+Layout = function(from, to)
+    local key = LayoutKey()
+    if not key or InCombatLockdown() then
+        return
+    end
+    ShapeshifterDB.barLayout = ShapeshifterDB.barLayout or {}
+    local slots = {}
+    for i, b in ipairs(buttons) do
+        slots[i] = b.spellId
+    end
+    slots[from], slots[to] = slots[to], slots[from]
+    local layout = {}
+    for i = 1, #buttons do
+        if slots[i] then
+            layout[i] = slots[i]
+        end
+    end
+    ShapeshifterDB.barLayout[key] = layout
+    Update(Shapeshift.state)
+end
+
+-- Back to the form's own order: /ss bar reset.
+function Shapeshift.ResetBarLayout()
+    local key = LayoutKey()
+    if key and ShapeshifterDB.barLayout then
+        ShapeshifterDB.barLayout[key] = nil
+        Update(Shapeshift.state)
+    end
+end
 
 local events = CreateFrame("Frame")
 events:RegisterEvent("PLAYER_REGEN_ENABLED")

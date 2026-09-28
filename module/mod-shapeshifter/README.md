@@ -14,7 +14,8 @@ catalogue lives in the `Shapeshift` addon, which sends the whole kit on one comm
   Each class-grade subsystem is on only when its flag is sent, so any of them can be switched off
   from the addon without a rebuild.
 - `.shapeshifter look <entry> <size>`: model, size and name only.
-- `.shapeshifter revert`, `.shapeshifter status` (also prints the band, power type, mana delta, regen,
+- `.shapeshifter revert` (refused in combat: the client cannot give the player's own bar back until
+  combat ends; death and logout still revert), `.shapeshifter status` (also prints the band, power type, mana delta, regen,
   form weapons and every gear ledger entry with its level).
 - `.shapeshifter prime <entry csv, 1-40>`: sends the client the creature query answers it never asked
   for, through the core's own handler, so the catalogue's 3D preview (SetCreature, the only model
@@ -28,9 +29,13 @@ catalogue lives in the `Shapeshift` addon, which sends the whole kit on one comm
   table the module logs it at startup and stances stay off.
 - `.shapeshifter puppet <entry> <size>` / `.shapeshifter puppet off`: the menu preview's private puppet
   (see Preview puppet below). Silent; answers `PUPPET;on;<entry>` or `PUPPET;off`.
+- `.shapeshifter voice <sound id>`: the soundboard. Plays one of the worn creature's own said or yelled
+  lines (its `creature_text` row with that sound, the form's entry or its `as=` identity) to everyone
+  near and says or yells its text as the player; any other sound is refused. At most one line a
+  second; the addon also waits for each line's length.
 
 Replies go to the addon as a hidden whisper with prefix `SHSH`: `ON;...`, `OFF;<reason>`, `ERR;<code>;<text>`,
-`PUPPET;...`, and after the state on `status`, `CAPS;prime,size,as,speed,puppet,size200,puppetsize,stance` (what
+`PUPPET;...`, and after the state on `status`, `CAPS;prime,size,as,speed,puppet,size200,puppetsize,stance,voice` (what
 this build understands; the addon only sends what it has seen there, so a newer addon stays quiet on an
 older module). `nocg` is added when the world database has no class-grade spell rows (spell 14,000,019
 is missing); the addon then sends the creatures' own spells and no class-grade flags.
@@ -45,7 +50,8 @@ refused. Auras from the form's spells are also written to `acore_characters.shap
 so a login after a crash strips them; the listed guids are loaded once at startup.
 
 While transformed, the player's own spells and all mounts are refused ("You can't do that while
-shapeshifted"); item uses and triggered spells still work. A look-only form keeps the player's
+shapeshifted"); item uses, triggered spells, opening or using world objects (chests, herbs, ore,
+quest objects: open-lock spells) and calling companion pets (minipet summons) still work. A look-only form keeps the player's
 own spells but still refuses mounts. In Balanced mode, damage and periodic ticks from the form's
 own spells are scaled by player level over creature level; Unleashed scales melee by the
 creature's swing instead.
@@ -92,6 +98,8 @@ spells by itself.
   200% at 20 yards, from the `ht=` model height times the size slider), never above 250% or below the
   player's own. A flying form (`fly=1`) flies at +280%, like an epic flying mount. Speed auras add on
   top; slows still apply. The addon sends `ht=` only once `CAPS` lists `speed`.
+- **Flight.** Only a flying form (`fly=1`) can fly: a GM's own fly is turned off while a walking form
+  is worn and back on revert (and kept that way across a map change).
 - **Fly animation.** A flying form's anim tier (UNIT_FIELD_BYTES_1 byte 3) is FLY while the movement
   flags say flying and GROUND otherwise (movement hook), and GROUND again on revert.
 - **Form summons.** Guardians a form's own class-grade spell calls are defensive (set in

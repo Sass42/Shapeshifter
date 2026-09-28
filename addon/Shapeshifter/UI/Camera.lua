@@ -38,7 +38,7 @@ local function Update(state)
             ShapeshifterDB.camera = saved
         end
         for name, key in pairs(SAVED) do
-            if saved[key] == nil then       -- a DB from 0.5.9 has no speed yet
+            if saved[key] == nil then       -- a DB saved by an older version has no speed yet
                 saved[key] = GetCVar(name)
             end
         end

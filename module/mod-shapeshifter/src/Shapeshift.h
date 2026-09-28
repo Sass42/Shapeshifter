@@ -77,6 +77,7 @@ namespace Shapeshift
         // Weapon stances (deep pass B2): the current stance (0: none) and what it added.
         uint32 stance = 0;
         uint32 stanceSwitchedMs = 0;
+        uint32 voicedMs = 0;                   // the soundboard's last line
         std::vector<uint32> stanceKit;         // the stance's own abilities, band-mapped
         std::vector<uint32> stanceLearned;     // of those, the ones this stance added
         std::vector<uint32> stanceSpells;      // its abilities, bonus and triggers: auras to strip
@@ -117,6 +118,7 @@ namespace Shapeshift
         void SendCaps(Player* player);
         std::string Resize(Player* player, uint32 sizePct);
         std::string Stance(Player* player, uint32 stance);
+        std::string Voice(Player* player, uint32 sound);
         void LoadStances();
         void Prime(Player* player, std::vector<uint32> const& entries);
         void Puppet(Player* player, uint32 entry, uint32 sizePct);
@@ -139,7 +141,7 @@ namespace Shapeshift
         bool GearFixed(ObjectGuid guid);
         float SpellScale(ObjectGuid guid, uint32 spellId);
         CastVerdict CheckCast(ObjectGuid guid, uint32 spellId, bool fromItem, bool triggered, bool mounts,
-                              bool shapeshifts);
+                              bool shapeshifts, bool utility);
 
     private:
         std::optional<ActiveForm> Copy(ObjectGuid guid);

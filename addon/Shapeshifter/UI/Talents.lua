@@ -139,7 +139,17 @@ function Shapeshift.ShowTalents(form)
         empty:Hide()
     end
     points:SetText("Points: " .. spent .. " (granted by the form)")
+    frame.form = form
     frame:Show()
+end
+
+-- The Talents buttons open the window and close it again (user, 2026-09-27).
+function Shapeshift.ToggleTalents(form)
+    if frame:IsShown() and (not form or frame.form == form) then
+        frame:Hide()
+    else
+        Shapeshift.ShowTalents(form)
+    end
 end
 
 function Shapeshift.TalentsShown()
@@ -155,7 +165,7 @@ local sheetButton = CreateFrame("Button", "ShapeshiftSheetTalents", PaperDollFra
 sheetButton:SetSize(96, 20)
 sheetButton:SetPoint("TOPRIGHT", PaperDollFrame, "TOPRIGHT", -40, -40)
 sheetButton:SetText("Form Talents")
-sheetButton:SetScript("OnClick", function() Shapeshift.ShowTalents(Shapeshift.CurrentForm()) end)
+sheetButton:SetScript("OnClick", function() Shapeshift.ToggleTalents(Shapeshift.CurrentForm()) end)
 sheetButton:Hide()
 
 Shapeshift.OnStateChange(function()

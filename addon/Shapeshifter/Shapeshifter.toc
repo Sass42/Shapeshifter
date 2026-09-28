@@ -2,7 +2,7 @@
 ## Title: Shapeshifter
 ## Notes: Become iconic bosses and mobs for a while (GM only; needs mod-shapeshifter on the server).
 ## Author: Sass42
-## Version: 1.0.0
+## Version: 1.1.0
 ## SavedVariables: ShapeshifterDB
 ## SavedVariablesPerCharacter: ShapeshifterCharDB
 
@@ -20,4 +20,4 @@ UI\BossBar.lua
 UI\Camera.lua
 UI\Talents.lua
 UI\Sheet.lua
-Spike\Spike.lua
+UI\Voices.lua

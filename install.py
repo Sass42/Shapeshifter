@@ -34,7 +34,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 HERE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 PATCHES = HERE / "patches"
 MODULE = HERE / "module" / "mod-shapeshifter"
@@ -52,7 +52,7 @@ BELOW_NORMAL_PRIORITY_CLASS = 0x00004000   # Windows: the build yields to everyt
 CREATE_NEW_CONSOLE = 0x00000010            # Windows: a restarted server gets its own console window
 CREATE_NO_WINDOW = 0x08000000              # Windows: tools run by the setup window get no console of their own
 WINDOWED = False                           # set by the setup window: tool output streams into its log
-# The names before 0.15.0 (Shapeshift): moved aside on install so the old copy never runs beside the new.
+# The names before the rename to Shapeshifter (Shapeshift): moved aside on install so the old copy never runs beside the new.
 OLD_ADDON, OLD_MODULE = "Shapeshift", "mod-shapeshift"
 SAVED_RENAMES = (("Shapeshift.lua", "Shapeshifter.lua", "ShapeshiftDB", "ShapeshifterDB"),
                  ("Shapeshift.lua", "Shapeshifter.lua", "ShapeshiftCharDB", "ShapeshifterCharDB"))
@@ -272,15 +272,107 @@ class Ui:
         self.notes.append(text)
 
 
+# ---- finding the tools a build needs ---------------------------------------------------------------
+# Setup only sees the PATH it was started with: git or CMake installed while it was open, or installed
+# without adding itself to PATH (GitHub Desktop's git, the CMake inside Visual Studio), is not on it.
+# So a tool is looked for on PATH, then on the PATH Windows has now, then where installers put it.
+
+TOOL_DIRS = {
+    "git": (r"%ProgramFiles%\Git\cmd", r"%ProgramW6432%\Git\cmd", r"%ProgramFiles(x86)%\Git\cmd",
+            r"%LOCALAPPDATA%\Programs\Git\cmd", r"%USERPROFILE%\scoop\shims", r"%ProgramData%\chocolatey\bin"),
+    "cmake": (r"%ProgramFiles%\CMake\bin", r"%ProgramW6432%\CMake\bin", r"%ProgramFiles(x86)%\CMake\bin",
+              r"%LOCALAPPDATA%\Programs\CMake\bin", r"%USERPROFILE%\scoop\shims", r"%ProgramData%\chocolatey\bin"),
+}
+# Inside a Visual Studio installation (vswhere lists them).
+VS_TOOL_DIRS = {
+    "git": r"Common7\IDE\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\cmd",
+    "cmake": r"Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin",
+}
+TOOLS = ("git", "cmake")          # run() and run_quiet() start these from where find_tool found them
+_found_tools = {}
+
+
+def registry_path():
+    """Windows: the folders on PATH as the registry holds it now (the machine's, then the user's)."""
+    if os.name != "nt":
+        return []
+    import winreg
+    dirs = []
+    for hive, key in ((winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                      (winreg.HKEY_CURRENT_USER, "Environment")):
+        try:
+            with winreg.OpenKey(hive, key) as handle:
+                value = winreg.QueryValueEx(handle, "Path")[0]
+        except OSError:
+            continue
+        dirs += [os.path.expandvars(d) for d in str(value).split(";") if d.strip()]
+    return dirs
+
+
+def visual_studios():
+    """The Visual Studio (and Build Tools) installation folders, newest first, from vswhere."""
+    if os.name != "nt":
+        return []
+    vswhere = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / \
+        "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
+    if not vswhere.is_file():
+        return []
+    try:
+        code, out = run_quiet([vswhere, "-all", "-products", "*", "-sort", "-property", "installationPath"])
+    except OSError:
+        return []
+    return [Path(line.strip()) for line in out.splitlines() if line.strip() and Path(line.strip()).is_dir()]
+
+
+def tool_candidates(name):
+    """Where find_tool looks after PATH, in order."""
+    dirs = registry_path() + [os.path.expandvars(d) for d in TOOL_DIRS.get(name, ())]
+    if name == "git":
+        desktop = Path(os.path.expandvars(r"%LOCALAPPDATA%")) / "GitHubDesktop"
+        dirs += [str(d / "resources" / "app" / "git" / "cmd") for d in sorted(desktop.glob("app-*"), reverse=True)]
+    if name in VS_TOOL_DIRS:
+        dirs += [str(vs / VS_TOOL_DIRS[name]) for vs in visual_studios()]
+    return dirs
+
+
+def find_tool(name):
+    """The full path of git or cmake, or None when this PC does not have it."""
+    found = shutil.which(name)
+    if found:
+        return found
+    if os.name != "nt":
+        return None
+    if name not in _found_tools:
+        _found_tools[name] = next((str(Path(d) / (name + ".exe")) for d in tool_candidates(name)
+                                   if "%" not in d and (Path(d) / (name + ".exe")).is_file()), None)
+    return _found_tools[name]
+
+
+def tool_command(cmd):
+    """cmd with git or cmake at its head replaced by the path find_tool found."""
+    cmd = [str(c) for c in cmd]
+    if cmd and cmd[0] in TOOLS:
+        cmd[0] = find_tool(cmd[0]) or cmd[0]
+    return cmd
+
+
 def run(ui, cmd, cwd=None, stdin_bytes=None, check_only=False, low_priority=False, detached=False):
     """Runs a command, or on a dry run only shows it (check_only commands change nothing, so they run).
     low_priority: the command and everything it starts run below normal priority (the build).
-    detached: what the command leaves running (a server) must not belong to Setup (run_detached)."""
+    detached: what the command leaves running (a server) must not belong to Setup (run_detached).
+    A program this PC does not have is said in words (exit code 127), never a bare WinError 2."""
     shown = " ".join('"{}"'.format(c) if " " in str(c) else str(c) for c in cmd)
     print("   $ " + shown)
     if ui.dry_run and not check_only:
         return 0
-    cmd = [str(c) for c in cmd]
+    try:
+        return run_found(ui, tool_command(cmd), cwd, stdin_bytes, low_priority, detached)
+    except FileNotFoundError:
+        print("   {} is not installed on this PC (or Setup cannot find it).".format(Path(str(cmd[0])).name))
+        return 127
+
+
+def run_found(ui, cmd, cwd, stdin_bytes, low_priority, detached):
     if detached and os.name == "nt":
         code = run_detached(cmd, cwd)
         if code is not None:
@@ -494,7 +586,10 @@ def replace_file(ui, source, target, backup_root, what):
 
 def run_quiet(cmd, cwd=None):
     extra = {"creationflags": CREATE_NO_WINDOW} if WINDOWED and os.name == "nt" else {}
-    result = subprocess.run([str(c) for c in cmd], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **extra)
+    try:
+        result = subprocess.run(tool_command(cmd), cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **extra)
+    except FileNotFoundError:
+        return 127, "{} is not installed on this PC.".format(Path(str(cmd[0])).name)
     return result.returncode, (result.stdout + result.stderr).decode("utf-8", "replace")
 
 
@@ -975,9 +1070,11 @@ def show_found(args, server):
              if server else None))
     for label, value in rows:
         print("   {:16} {}".format(label, value or "NOT FOUND (that step is skipped)"))
+    for line in build_readiness(args):
+        print("   " + line)
 
 
-# ---- preparing a repack's own source (0.16.0) --------------------------------------------------------
+# ---- preparing a repack's own source -----------------------------------------------------------------
 # A repack update brings a new prebuilt server; Shapeshifter has to be compiled into that same core.
 # The repack ships its core as Source/server-source.zip; the CoA-Bots add-on's server is that core plus
 # mod-playerbots, whose repository and exact revision CoA-Bots records (README.md, release.json).
@@ -1008,6 +1105,300 @@ def bots_source(repack_root):
         except ValueError:
             pass
     return out
+
+
+# ---- the build tools (1.1.0) -------------------------------------------------------------------------
+# Shapeshifter is compiled into the server, which needs Git, CMake, Visual Studio's C++ tools, Boost,
+# OpenSSL and the MySQL client library. A player who downloaded a repack has none of them. Setup finds
+# the ones this PC has, lists the rest (each with its download page) and, for the ones the player
+# ticks, downloads and installs them: nothing is bundled with Shapeshifter.
+BOOST_VERSION = "1.81.0"                   # the Boost the CoA repack's server builds with
+MYSQL_VERSION = "8.4.9"                    # the MySQL client the CoA repack ships (a match avoids ACE00046)
+LOCAL = Path(os.environ.get("SystemDrive", "C:") + "\\") / "local"   # where Boost and MySQL go (no admin needed)
+ORIGINAL = "shapeshifter-original"     # beside the server: the repack's own worldserver, kept for uninstall
+ORIGINAL_FILES = (WORLDSERVER, "libmysql.dll", "worldserver.pdb")
+
+
+def boost_root(seed=None):
+    """A Boost with its compiled libraries: the seed build's, BOOST_ROOT, or one under C:\\local."""
+    for candidate in ((seed or {}).get("BOOST_ROOT"), os.environ.get("BOOST_ROOT")):
+        if candidate and (Path(candidate) / "boost" / "version.hpp").is_file():
+            return Path(candidate)
+    found = sorted(p for p in LOCAL.glob("boost_*") if (p / "boost" / "version.hpp").is_file())
+    return found[-1] if found else None
+
+
+def openssl_root(seed=None):
+    """An OpenSSL with headers and import libraries (the full installer, not Light)."""
+    programs = Path(os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles", r"C:\Program Files"))
+    for candidate in ((seed or {}).get("OPENSSL_ROOT_DIR"), os.environ.get("OPENSSL_ROOT_DIR"),
+                      programs / "OpenSSL-Win64", programs / "OpenSSL"):
+        if candidate and (Path(candidate) / "include" / "openssl" / "ssl.h").is_file():
+            return Path(candidate)
+    return None
+
+
+def mysql_dev(seed=None):
+    """(include folder, libmysql.lib) of a MySQL with its client library, or None."""
+    seed = seed or {}
+    if seed.get("MYSQL_INCLUDE_DIR") and Path(seed.get("MYSQL_LIBRARY", "")).is_file():
+        return Path(seed["MYSQL_INCLUDE_DIR"]), Path(seed["MYSQL_LIBRARY"])
+    programs = Path(os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles", r"C:\Program Files"))
+    for root in sorted(LOCAL.glob("mysql-*"), reverse=True) + sorted(programs.glob("MySQL/MySQL Server *"),
+                                                                     reverse=True):
+        if (root / "include" / "mysql.h").is_file() and (root / "lib" / "libmysql.lib").is_file():
+            return root / "include", root / "lib" / "libmysql.lib"
+    return None
+
+
+def has_cpp_compiler():
+    return any((vs / "VC" / "Tools" / "MSVC").is_dir() for vs in visual_studios())
+
+
+# key, name, what it is for, download page, how Setup installs it: ("winget", id, extra args) or
+# ("download", url, kind) with kind "inno" (a silent installer into C:\local) or "zip" (unpacked there).
+BUILD_TOOLS = (
+    ("git", "Git", "applies the core patches, fetches mod-playerbots", "https://git-scm.com/download/win",
+     ("winget", "Git.Git", [])),
+    ("cmake", "CMake", "configures the build", "https://cmake.org/download/",
+     ("winget", "Kitware.CMake", [])),
+    ("vs", "Visual Studio Build Tools (C++)", "the compiler; about 3 to 6 GB",
+     "https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022",
+     ("winget", "Microsoft.VisualStudio.2022.BuildTools",
+      ["--override", "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"])),
+    ("boost", "Boost " + BOOST_VERSION, "C++ libraries the core uses; about 200 MB",
+     "https://sourceforge.net/projects/boost/files/boost-binaries/" + BOOST_VERSION + "/",
+     ("download", "https://downloads.sourceforge.net/project/boost/boost-binaries/{v}/boost_{u}-msvc-14.3-64.exe"
+      .format(v=BOOST_VERSION, u=BOOST_VERSION.replace(".", "_")), "inno")),
+    ("openssl", "OpenSSL (full, not Light)", "encryption for logins", "https://slproweb.com/products/Win32OpenSSL.html",
+     ("winget", "ShiningLight.OpenSSL.Dev", [])),
+    ("mysql", "MySQL " + MYSQL_VERSION + " client library", "the database connection; about 280 MB, no service",
+     "https://dev.mysql.com/downloads/mysql/",
+     ("download", "https://cdn.mysql.com/archives/mysql-8.4/mysql-{v}-winx64.zip".format(v=MYSQL_VERSION), "zip")),
+)
+
+
+def tool_present(key, seed=None):
+    """True when this PC has the tool (a build already configured here proves the compiler and libraries)."""
+    seed = seed or {}
+    if key in ("git", "cmake"):
+        return find_tool(key) is not None
+    if os.name != "nt":
+        return True
+    if key == "vs":
+        return bool(seed.get("CMAKE_GENERATOR")) or has_cpp_compiler()
+    if key == "boost":
+        return boost_root(seed) is not None
+    if key == "openssl":
+        return openssl_root(seed) is not None or bool(seed.get("OPENSSL_INCLUDE_DIR"))
+    if key == "mysql":
+        return mysql_dev(seed) is not None
+    return True
+
+
+def missing_build_tools(seed=None):
+    """[(key, name, why, page)] of the build tools this PC lacks."""
+    return [(key, name, why, page) for key, name, why, page, _ in BUILD_TOOLS if not tool_present(key, seed)]
+
+
+def found_dev_flags(seed=None):
+    """-D flags pointing CMake at the Boost, OpenSSL and MySQL found here (Setup's own installs live
+    where CMake does not look by itself)."""
+    flags = []
+    boost, openssl, mysql = boost_root(seed), openssl_root(seed), mysql_dev(seed)
+    if boost:
+        flags.append("-DBOOST_ROOT=" + boost.as_posix())
+    if openssl:
+        flags.append("-DOPENSSL_ROOT_DIR=" + openssl.as_posix())
+    if mysql:
+        flags += ["-DMYSQL_INCLUDE_DIR=" + mysql[0].as_posix(), "-DMYSQL_LIBRARY=" + mysql[1].as_posix()]
+    return flags
+
+
+def has_winget():
+    return os.name == "nt" and run_quiet(["winget", "--version"])[0] == 0
+
+
+def download(url, target):
+    """Downloads url to target, printing progress every 10%."""
+    request = urllib.request.Request(url, headers={"User-Agent": "Shapeshifter-Setup/" + VERSION})
+    with urllib.request.urlopen(request, timeout=120) as response, open(str(target), "wb") as out:
+        total = int(response.headers.get("Content-Length") or 0)
+        done, shown = 0, -1
+        for block in iter(lambda: response.read(1 << 20), b""):
+            out.write(block)
+            done += len(block)
+            if total and done * 10 // total != shown:
+                shown = done * 10 // total
+                print("   {:.0f} of {:.0f} MB".format(done / 1e6, total / 1e6))
+
+
+def install_tool(ui, key):
+    """Downloads and installs one build tool. True when it is there afterwards. Windows asks for
+    administrator rights for the ones that install for every user."""
+    spec = next(t for t in BUILD_TOOLS if t[0] == key)
+    _, name, _, page, how = spec
+    print("\n   installing {}".format(name))
+    if ui.dry_run:
+        print("   (dry run) would install it")
+        return True
+    if how[0] == "winget":
+        if not has_winget():
+            print("   Windows' package manager (winget) is not on this PC: install {} from {}".format(name, page))
+            return False
+        run(ui, ["winget", "install", "--exact", "--id", how[1], "--silent", "--accept-package-agreements",
+                 "--accept-source-agreements", "--disable-interactivity"] + how[2])
+    else:
+        url, kind = how[1], how[2]
+        work = Path(tempfile.mkdtemp(prefix="shapeshifter-tool-"))
+        try:
+            file = work / url.rsplit("/", 1)[-1]
+            print("   downloading {}".format(url))
+            try:
+                download(url, file)
+            except (urllib.error.URLError, OSError) as error:
+                print("   the download failed ({}). Get it from {}".format(getattr(error, "reason", error), page))
+                return False
+            if kind == "zip":
+                print("   unpacking into {}".format(LOCAL))
+                LOCAL.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(str(file)) as archive:
+                    archive.extractall(str(LOCAL))
+            else:
+                target = LOCAL / ("boost_" + BOOST_VERSION.replace(".", "_"))
+                print("   running its installer into {} (Windows may ask for administrator rights; its progress window".format(target))
+                print("   shows while it unpacks about 1.5 GB, which takes a few minutes)")
+                run_elevated(file, ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=" + str(target)])
+        finally:
+            shutil.rmtree(str(work), ignore_errors=True)
+    _found_tools.clear()                  # a new install may be on PATH now
+    present = tool_present(key)
+    print("   {} {}.".format(name, "is installed" if present else "is still missing; get it from " + page))
+    return present
+
+
+def run_elevated(exe, arguments):
+    """Runs an installer that needs administrator rights (Windows shows its UAC prompt) and waits."""
+    def quote(text):
+        return "'" + str(text).replace("'", "''") + "'"
+    script = "Start-Process -FilePath {} -ArgumentList {} -Verb RunAs -Wait".format(
+        quote(exe), ",".join(quote(a) for a in arguments))
+    return run_quiet(["powershell", "-NoProfile", "-NonInteractive", "-Command", script])[0]
+
+
+def repack_release(root):
+    """The repack's release id (RELEASE.json releaseId, e.g. main-20260925-6557290fd), or None."""
+    try:
+        return json.loads((Path(root) / "RELEASE.json").read_text(encoding="utf-8-sig")).get("releaseId")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(str(path), "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def stock_hashes(repack_root):
+    """SHA-256s of the worldservers the repack and its CoA-Bots add-on ship (lower case)."""
+    root, hashes = Path(repack_root), set()
+    try:
+        release = json.loads((root / "RELEASE.json").read_text(encoding="utf-8-sig"))
+        hashes |= {b.get("SHA256", "").lower() for b in release.get("binaries", []) if b.get("Name") == WORLDSERVER}
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        bots = json.loads((root / "CoA-Bots" / "release.json").read_text(encoding="utf-8-sig"))
+        hashes |= {h.lower() for key in ("originalWorldserverSha256", "patchedWorldserverSha256")
+                   for h in bots.get(key, [])}
+    except (OSError, ValueError, AttributeError):
+        pass
+    return hashes - {""}
+
+
+def keep_original(ui, target):
+    """Before the first Shapeshifter worldserver goes in: a copy of the repack's own (and its MySQL DLL
+    and symbols) in shapeshifter-original/ beside it, so an uninstall puts it back without a compiler.
+    Only a worldserver the repack itself shipped is kept (a repack update refreshes the copy)."""
+    target = Path(target)
+    repack = repack_of(target)
+    if not repack or not target.is_file() or file_sha256(target) not in stock_hashes(repack["root"]):
+        return
+    keep = target.parent / ORIGINAL
+    if same_binary(target, keep / WORLDSERVER):
+        return
+    print("   keeping the repack's own worldserver in {} (the uninstall puts it back)".format(keep))
+    if ui.dry_run:
+        return
+    keep.mkdir(exist_ok=True)
+    for name in ORIGINAL_FILES:
+        if (target.parent / name).is_file():
+            shutil.copy2(str(target.parent / name), str(keep / name))
+        elif (keep / name).exists():
+            (keep / name).unlink()
+
+
+def restoring(args):
+    """An uninstall on a PC with no build folder of its own (the server was compiled from the repack's
+    source): the repack's own worldserver kept by the install goes back, no compile needed."""
+    server = getattr(args, "server", None)
+    return bool(server and getattr(args, "prepare_source", False)
+                and (Path(server).parent / ORIGINAL / WORLDSERVER).is_file())
+
+
+def build_seed(args):
+    """The configured build that proves which tools this PC has: the chosen build folder, else the one
+    most recently configured here."""
+    cache = read_cmake_cache(args.build) if getattr(args, "build", None) else {}
+    return cache or getattr(args, "seed", None) or {}
+
+
+def required_tools_missing(args):
+    """[(key, name, why, page)] of the build tools this run needs and this PC lacks. The install (and
+    an uninstall that rebuilds) compiles the server; an uninstall that puts the repack's own server
+    back does not."""
+    if getattr(args, "uninstall", False) and restoring(args):
+        return []
+    if not getattr(args, "prepare_source", False) and not getattr(args, "build", None):
+        return []
+    return missing_build_tools(build_seed(args))
+
+
+def build_readiness(args):
+    """Lines saying up front what this install is missing on this PC. Empty when it can go ahead."""
+    if not getattr(args, "prepare_source", False) and not getattr(args, "build", None):
+        if not getattr(args, "server", None) or getattr(args, "uninstall", False):
+            return []
+        return ["No AzerothCore source or build folder was found for this server. Shapeshifter is compiled",
+                "into the server, so it needs the source your server was built from: Browse to it and its",
+                "build folder (the one with CMakeCache.txt), or ask the repack's maker for the source."]
+    missing = required_tools_missing(args)
+    if not missing:
+        return []
+    lines = ["Shapeshifter is compiled into your server. Before it can install, this PC needs these build tools:"]
+    lines += ["  - {} ({}): {}".format(name, why, page) for _, name, why, page in missing]
+    return lines
+
+
+def acquire_tools(ui, args):
+    """Console: before anything is installed, the missing build tools are listed with their pages and,
+    on yes, downloaded and installed. True when none is missing afterwards."""
+    missing = required_tools_missing(args)
+    if not missing:
+        return True                       # (show_found listed them with their pages just above)
+    if ui.ask("\nDownload and install the missing build tools now? [Y/n]").lower() in ("", "y", "yes"):
+        for key, _, _, _ in missing:
+            install_tool(ui, key)
+    still = required_tools_missing(args)
+    if still:
+        print("\nShapeshifter cannot install until these are on this PC: {}.".format(
+            ", ".join(name for _, name, _, _ in still)))
+        print("Install them from the pages above (restart the PC after Visual Studio), then run Setup again.")
+        return False
+    return True
 
 
 def seed_flags(cache):
@@ -1059,12 +1450,39 @@ def unpack_source(ui, zip_path, target):
     return True
 
 
+def ensure_build_tools(ui, args):
+    """Installs the build tools this PC lacks that the player chose (args.install_tools: the window's
+    checklist; asked here otherwise), then checks again. False, with nothing changed, when any is
+    still missing."""
+    seed = build_seed(args)
+    missing = missing_build_tools(seed)
+    if not missing:
+        return True
+    print("   This PC is missing build tools:")
+    for _, name, why, page in missing:
+        print("     - {} ({}): {}".format(name, why, page))
+    chosen = getattr(args, "install_tools", None)
+    if chosen is None:
+        chosen = [m[0] for m in missing] if ui.confirm("   Download and install them now?") else []
+    for key, _, _, _ in missing:
+        if key in chosen:
+            install_tool(ui, key)
+    still = [] if ui.dry_run else missing_build_tools(seed)
+    if still:
+        print("\n   Still missing: {}.".format(", ".join(name for _, name, _, _ in still)))
+        print("   Nothing on your server was changed. Install them from the pages above (a PC restart may be")
+        print("   needed after Visual Studio), then start Setup again.")
+        return False
+    return True
+
+
 def step_source(ui, args):
     ui.step("0. The repack's own source", [
-        "None of the build folders on this PC built the server you run (a repack update brings a new",
-        "one), so Shapeshifter is compiled into the repack's own core: its Source/server-source.zip is",
-        "unpacked and configured as a Release build (no debug symbols: it compiles and links faster);",
-        "for the CoA-Bots server, mod-playerbots is fetched at the revision CoA-Bots was built from.",
+        "No build folder on this PC made the server you run (a fresh repack, or a repack update), so",
+        "Shapeshifter is compiled into the repack's own core: the build tools this PC lacks are installed",
+        "first (the ones you ticked), then its Source/server-source.zip is unpacked and configured as a",
+        "Release build; for the CoA-Bots server, mod-playerbots is fetched at the revision CoA-Bots was",
+        "built from.",
     ])
     if not getattr(args, "prepare_source", False):
         print("   not needed: {} built the server you run.".format(args.build))
@@ -1074,6 +1492,8 @@ def step_source(ui, args):
     if not zip_path or not zip_path.is_file():
         print("   the server is not a repack that ships its source; pick your source and build folders instead.")
         return None
+    if not ensure_build_tools(ui, args):
+        return False
     source = zip_path.parent / "shapeshifter-source"
     build = zip_path.parent / "shapeshifter-build"
     if not unpack_source(ui, zip_path, source):
@@ -1081,19 +1501,20 @@ def step_source(ui, args):
     if getattr(args, "bots", False):
         info = bots_source(repack["root"]) or dict(PLAYERBOTS_FALLBACK, revision=None)
         dest = source / "modules" / "mod-playerbots"
-        if not shutil.which("git"):
-            print("   git is not on PATH: it is needed to fetch mod-playerbots.")
-            return False
         if not dest.exists():
             print("   fetching mod-playerbots ({} branch {})".format(info["url"], info["branch"]))
-            if run(ui, ["git", "clone", "--branch", info["branch"], info["url"], dest]) != 0:
+            if run(ui, ["git", "clone", "-c", "core.longpaths=true", "--branch", info["branch"], info["url"],
+                        dest]) != 0:
                 print("   the download failed (internet connection?).")
                 return False
         if info.get("revision") and run(ui, ["git", "checkout", info["revision"]], cwd=dest) != 0:
             print("   revision {} is not in that repository.".format(info["revision"]))
             return False
     print("   configuring {} (like the build already on this PC, Release)".format(build))
-    flags = seed_flags(getattr(args, "seed", None) or {}) + ["-DCMAKE_BUILD_TYPE=Release"]
+    seed = getattr(args, "seed", None) or {}
+    flags = seed_flags(seed)
+    flags += [f for f in found_dev_flags(seed) if not any(g.split("=")[0] == f.split("=")[0] for g in flags)]
+    flags.append("-DCMAKE_BUILD_TYPE=Release")
     if run(ui, ["cmake", "-S", source, "-B", build] + flags) != 0:
         print("   CMake could not configure the repack's source. Building AzerothCore needs Visual Studio,")
         print("   CMake, Boost, OpenSSL and the MySQL libraries (see the AzerothCore install guide).")
@@ -1111,8 +1532,9 @@ def step_patches(ui, args):
         "(form weapons, form speed). They are applied with git apply, checked first with --check;",
         "a patch that is already in your source is left alone.",
     ])
-    if not shutil.which("git"):
-        print("   git is not on PATH. Install git, or apply the files in patches/ by hand.")
+    if not find_tool("git"):
+        print("   Git is not installed on this PC (https://git-scm.com/download/win). Install it and start")
+        print("   Setup again, or apply the files in patches/ by hand.")
         return False
     core = need_core(ui, args)
     if not_prepared_yet(ui, args):
@@ -1221,8 +1643,11 @@ def step_build(ui, args):
         "configure time), then builds the worldserver target. The Player.h patches mean most of",
         "the core recompiles: expect anything from ten minutes to an hour.",
     ])
-    if not shutil.which("cmake"):
-        print("   cmake is not on PATH. Build the core the way you normally do.")
+    if puts_original_back(args):
+        return True
+    if not find_tool("cmake"):
+        print("   CMake is not installed on this PC (https://cmake.org/download/). Install it and start")
+        print("   Setup again, or build the core the way you normally do.")
         return False
     core = need_core(ui, args)
     if not_prepared_yet(ui, args):
@@ -1287,6 +1712,8 @@ def step_server(ui, args):
         "backups/. The server has to be stopped for this; if it is still running, the step waits",
         "until you stop it.",
     ])
+    if getattr(args, "uninstall", False) and restoring(args):
+        return restore_original(ui, args)
     core = need_core(ui, args)
     build = Path(args.build) if args.build else core / "build"
     cache = read_cmake_cache(build)
@@ -1310,6 +1737,14 @@ def step_server(ui, args):
         print("   your server runs the build's own worldserver: nothing to copy.")
         return True
     print("   new: {}\n   live: {}".format(built, target))
+    repack = repack_of(target)
+    if repack and (repack["root"] / "CoA-Bots" / "coa_bots.py").is_file() and \
+            target.parent.resolve() == (repack["root"] / "Core").resolve():
+        warning = ("CoA-Bots will not start while the repack's own server (Core\\worldserver.exe) is Shapeshifter's: "
+                   "it checks that file is the repack's. Install into the CoA-Bots server instead (tick the "
+                   "CoA-Bots box), or uninstall before starting CoA-Bots.")
+        print("   Note: " + warning)
+        ui.note(warning)
     if not ui.confirm("   Replace the live worldserver?"):
         return None
     server = getattr(args, "server_ctl", None)
@@ -1318,6 +1753,7 @@ def step_server(ui, args):
         if not stopped:
             return stopped
     backup_root = BACKUPS / args.stamp / "server"
+    keep_original(ui, target)
     done = replace_file(ui, built, target, backup_root, "worldserver")
     symbols = built.with_suffix(".pdb")
     if done and symbols.is_file():
@@ -1328,6 +1764,193 @@ def step_server(ui, args):
     dll = mysql_client_dll(cache) if cache else None
     if done and dll:
         replace_file(ui, dll, target.parent / dll.name, backup_root, "MySQL client library")
+    if done:
+        bring_runtime_dlls(ui, built, cache, target, backup_root)
+    return done
+
+
+# ---- the DLLs the new worldserver loads (1.1.0) --------------------------------------------------------
+# A worldserver built here loads DLLs from the build PC: OpenSSL's (libcrypto-4-x64.dll after an
+# OpenSSL 4 install), and the Visual C++ runtime of the compiler that built it. On the build PC they are
+# found in System32 or on PATH, so the server starts there and nowhere else. Every one the server folder
+# lacks, and a VC++ runtime DLL there older than the build's, goes beside it.
+VC_RUNTIME = ("msvcp140", "vcruntime140", "concrt140", "vccorlib140")
+
+
+def pe_imports(path):
+    """The DLL names a Windows executable or DLL imports (its import directory), [] if unreadable."""
+    import struct
+    try:
+        data = Path(path).read_bytes()
+        pe = struct.unpack_from("<I", data, 0x3C)[0]
+        sections = struct.unpack_from("<H", data, pe + 6)[0]
+        optional_size = struct.unpack_from("<H", data, pe + 20)[0]
+        optional = pe + 24
+        directory = optional + (112 if struct.unpack_from("<H", data, optional)[0] == 0x20B else 96)
+        rva = struct.unpack_from("<I", data, directory + 8)[0]
+        table = [struct.unpack_from("<8sIIII", data, optional + optional_size + 40 * i) for i in range(sections)]
+
+        def offset(address):
+            for _, vsize, vaddr, rawsize, rawptr in table:
+                if vaddr <= address < vaddr + max(vsize, rawsize):
+                    return address - vaddr + rawptr
+            raise ValueError(address)
+        names, pos = [], offset(rva) if rva else None
+        while pos is not None:
+            name_rva = struct.unpack_from("<I", data, pos + 12)[0]
+            if not name_rva:
+                break
+            start = offset(name_rva)
+            names.append(data[start:data.index(b"\0", start)].decode("ascii", "replace"))
+            pos += 20
+        return names
+    except (OSError, ValueError, struct.error, IndexError):
+        return []
+
+
+def file_version(path):
+    """A Windows file's version as a tuple (0,) when it has none."""
+    if os.name != "nt":
+        return (0,)
+    import ctypes
+    from ctypes import wintypes
+    version = ctypes.windll.version
+    size = version.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
+        return (0,)
+    buffer = ctypes.create_string_buffer(size)
+    if not version.GetFileVersionInfoW(str(path), 0, size, buffer):
+        return (0,)
+    info, length = ctypes.c_void_p(), wintypes.UINT()
+    if not version.VerQueryValueW(buffer, "\\", ctypes.byref(info), ctypes.byref(length)):
+        return (0,)
+    words = ctypes.cast(info, ctypes.POINTER(wintypes.DWORD * 4))[0]
+    return (words[2] >> 16, words[2] & 0xFFFF, words[3] >> 16, words[3] & 0xFFFF)
+
+
+def file_company(path):
+    """A Windows file's CompanyName ('' when it has none)."""
+    if os.name != "nt":
+        return ""
+    import ctypes
+    from ctypes import wintypes
+    version = ctypes.windll.version
+    size = version.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
+        return ""
+    buffer = ctypes.create_string_buffer(size)
+    if not version.GetFileVersionInfoW(str(path), 0, size, buffer):
+        return ""
+    info, length = ctypes.c_void_p(), wintypes.UINT()
+    if not version.VerQueryValueW(buffer, "\\VarFileInfo\\Translation", ctypes.byref(info), ctypes.byref(length)) \
+            or length.value < 4:
+        return ""
+    lang = ctypes.cast(info, ctypes.POINTER(wintypes.WORD * 2))[0]
+    key = "\\StringFileInfo\\{:04x}{:04x}\\CompanyName".format(lang[0], lang[1])
+    if not version.VerQueryValueW(buffer, key, ctypes.byref(info), ctypes.byref(length)) or not length.value:
+        return ""
+    return ctypes.wstring_at(info, length.value - 1)
+
+
+def is_windows_dll(path):
+    """Part of Windows itself (Microsoft's, in System32, not the VC++ runtime): every PC has it. OpenSSL
+    and others put copies in System32 too, so the folder alone does not tell."""
+    return Path(path).is_file() and not path.name.lower().startswith(VC_RUNTIME) and \
+        file_company(path).startswith("Microsoft")
+
+
+def dll_folders(built, cache):
+    """Where the build PC keeps the DLLs its worldserver loads: next to it, the libraries it was built
+    against, PATH, then System32 (where the VC++ runtime is)."""
+    folders = [Path(built).parent]
+    for key in ("OPENSSL_ROOT_DIR", "OPENSSL_INCLUDE_DIR"):
+        if cache.get(key):
+            root = Path(cache[key]).parent if key.endswith("INCLUDE_DIR") else Path(cache[key])
+            folders += [root / "bin", root]
+    openssl = openssl_root(cache)
+    if openssl:
+        folders += [openssl / "bin", openssl]
+    if cache.get("MYSQL_LIBRARY"):
+        folders.append(Path(cache["MYSQL_LIBRARY"]).parent)
+    folders += [Path(d) for d in os.environ.get("PATH", "").split(os.pathsep) + registry_path() if d]
+    system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+    return folders + [system]
+
+
+def runtime_dlls(built, cache, server_dir):
+    """[source path] of the DLLs to put beside the server: the ones it (or those DLLs) loads that the
+    server folder lacks, and VC++ runtime DLLs newer than the server folder's. Windows' own are skipped."""
+    system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+    folders = dll_folders(built, cache)
+    wanted, queue, seen = [], list(pe_imports(built)), set()
+    while queue:
+        name = queue.pop(0)
+        low = name.lower()
+        if low in seen or low.startswith(("api-ms-", "ext-ms-")) or low == "libmysql.dll":
+            continue
+        seen.add(low)
+        runtime = low.startswith(VC_RUNTIME)
+        if not runtime and is_windows_dll(system / name):
+            continue
+        source = next((f / name for f in folders if (f / name).is_file()), None)
+        if runtime:                                   # the newest one the build PC has
+            source = max((f / name for f in folders if (f / name).is_file()), key=file_version, default=None)
+        if source is None:
+            continue
+        here = Path(server_dir) / name
+        if here.is_file() and (not runtime or file_version(here) >= file_version(source)):
+            continue
+        wanted.append(source)
+        queue += pe_imports(source)
+    return wanted
+
+
+def bring_runtime_dlls(ui, built, cache, target, backup_root):
+    """Puts the DLLs runtime_dlls names beside the server. For the CoA-Bots server, a VC++ runtime DLL
+    also goes into the repack's own Core folder: CoA-Bots copies that folder's DLLs over its own at every
+    start (a newer runtime runs the repack's server too)."""
+    if os.name != "nt":
+        return
+    repack = repack_of(target)
+    for source in runtime_dlls(built, cache, target.parent):
+        folders = [target.parent]
+        if source.name.lower().startswith(VC_RUNTIME) and repack and repack["bots"] and \
+                (repack["root"] / "Core").resolve() != target.parent.resolve():
+            folders.append(repack["root"] / "Core")
+        for folder in folders:
+            backup = backup_root if folder == target.parent else backup_root / "repack-Core"
+            replace_file(ui, source, folder / source.name, backup, "runtime library " + source.name)
+
+
+def puts_original_back(args):
+    """True (the step says why it has nothing to do) when an uninstall puts the repack's own worldserver
+    back instead of compiling: no source, patches, module or build to undo on this PC."""
+    if getattr(args, "uninstall", False) and restoring(args):
+        print("   not needed: the repack's own worldserver goes back instead (the server step).")
+        return True
+    return False
+
+
+def restore_original(ui, args):
+    """Uninstall without a compiler: the repack's own worldserver, MySQL DLL and symbols, kept in
+    shapeshifter-original/ by the install, go back in place (what they replace goes to backups/)."""
+    target = Path(args.server)
+    keep = target.parent / ORIGINAL
+    print("   putting back the repack's own worldserver from {}".format(keep))
+    if not ui.confirm("   Put it back?"):
+        return None
+    server = getattr(args, "server_ctl", None)
+    if server and server.exe.resolve() == target.resolve():
+        stopped = server.stop()
+        if not stopped:
+            return stopped
+    backup_root = BACKUPS / args.stamp / "server"
+    done = True
+    for name in ORIGINAL_FILES:
+        if (keep / name).is_file():
+            done = replace_file(ui, keep / name, target.parent / name, backup_root, name) and done
+        elif (target.parent / name).is_file():
+            done = move_away(ui, target.parent / name, backup_root, name) and done
     return done
 
 
@@ -1489,6 +2112,8 @@ def undo_sql(ui, args):
 
 def undo_module(ui, args):
     ui.step("4. Server module", ["Moves modules/mod-shapeshifter (and an old mod-shapeshift) out of your core, into backups/."])
+    if puts_original_back(args):
+        return True
     core = need_core(ui, args)
     targets = [t for t in (core / "modules" / "mod-shapeshifter", core / "modules" / OLD_MODULE) if t.exists()]
     if not targets:
@@ -1507,7 +2132,9 @@ def undo_patches(ui, args):
         "Reverses the Shapeshifter patches your core has (git apply -R), newest first, each checked",
         "first. Patches that are not in your source are left alone.",
     ])
-    if not shutil.which("git"):
+    if puts_original_back(args):
+        return True
+    if not find_tool("git"):
         print("   git is not on PATH. Reverse the files in patches/ by hand (git apply -R).")
         return False
     core = need_core(ui, args)
@@ -1749,6 +2376,8 @@ def main(argv=None, answers=None):
         if not args.step_by_step:
             args.server_ctl = discover(ui, args)
             show_found(args, args.server_ctl)
+            if not args.dry_run and not acquire_tools(ui, args):
+                return 1
             print("\nIt will {}: {}.".format("remove" if args.uninstall else "install", ", ".join(steps)))
             if args.server_ctl and args.server_ctl.running():
                 print("Your server is running: it is stopped before the build and started again at the end.")

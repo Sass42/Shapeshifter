@@ -80,8 +80,38 @@ function Shapeshift.Look(entry, sizePct)
     SendIfReady(P.BuildLook(entry, sizePct))
 end
 
+-- Not in combat (user, 2026-09-27): your own bar cannot come back until combat ends, so the form
+-- stays until then. The server refuses it too.
 function Shapeshift.Revert()
+    if InCombatLockdown() then
+        Shapeshift.ShowError("You can't revert in combat.")
+        return
+    end
     SendIfReady(P.REVERT)
+end
+
+-- The form this character wore last (a skin resolves to its look), with its mode and size.
+function Shapeshift.LastForm()
+    local last = ShapeshifterCharDB and ShapeshifterCharDB.lastForm
+    local base = last and Shapeshift.FormById(last.id)
+    if not base then
+        return nil
+    end
+    for _, form in ipairs(Shapeshift.Catalogue.Skins(Shapeshift.Forms, base)) do
+        if form.entry == last.entry then
+            return form, last.mode, last.size
+        end
+    end
+    return base, last.mode, last.size
+end
+
+function Shapeshift.ApplyLast()
+    local form, mode, size = Shapeshift.LastForm()
+    if not form then
+        Shapeshift.ShowError("No form used yet on this character.")
+        return
+    end
+    Shapeshift.Apply(form, mode, size)
 end
 
 -- Key Bindings menu entry for the switch below (Bindings.xml).
@@ -128,6 +158,11 @@ end
 
 function Shapeshift.OnStateChange(fn)
     listeners[#listeners + 1] = fn
+end
+
+local capsListeners = {}
+function Shapeshift.OnCaps(fn)
+    capsListeners[#capsListeners + 1] = fn
 end
 
 -- Asks the server to send this client the given creatures, so the model preview can draw them.
@@ -217,6 +252,9 @@ local function HandleReply(reply)
         Shapeshift.caps = reply.caps
         P.MAX_SIZE = reply.caps.size200 and 200 or 100
         P.PUPPET_MIN = reply.caps.puppetsize and 1 or 10
+        for _, fn in ipairs(capsListeners) do
+            fn(reply.caps)
+        end
         return
     elseif reply.kind == "err" then
         Shapeshift.ShowError(reply.text)
@@ -238,6 +276,10 @@ local function HandleReply(reply)
         if not (was.active and was.entry == reply.entry and was.mode == reply.mode and was.look == reply.look) then
             resizeSent = nil
             Print("You are now " .. reply.name .. (reply.look and " (look only)." or " (" .. reply.mode .. ")."))
+        end
+        local form = not reply.look and Shapeshift.CurrentForm()
+        if form then        -- for the minimap button's right-click (user, 2026-09-27)
+            ShapeshifterCharDB.lastForm = { id = form.id, entry = form.entry, mode = reply.mode, size = reply.size }
         end
     else
         local was = Shapeshift.state.active
@@ -282,7 +324,7 @@ function Shapeshift.CurrentForm()
     return nil
 end
 
-local USAGE = "/ss (open the menu), /ss apply <form id> [b|u] [size 10-100], /ss look <creature entry> [size], /ss revert, /ss talents, /ss status, /ss spike"
+local USAGE = "/ss (open the menu), /ss apply <form id> [b|u] [size 10-100], /ss look <creature entry> [size], /ss revert, /ss talents, /ss bar reset, /ss status"
 
 SLASH_SHAPESHIFT1 = "/ss"
 SLASH_SHAPESHIFT2 = "/shapeshift"
@@ -312,10 +354,11 @@ SlashCmdList.SHAPESHIFT = function(input)
         -- The manual retry: always sent.
         ShapeshifterCharDB.probed = true
         Shapeshift.Send(P.STATUS)
-    elseif parsed.cmd == "talents" and Shapeshift.ShowTalents then
-        Shapeshift.ShowTalents(Shapeshift.CurrentForm())
-    elseif parsed.cmd == "spike" and Shapeshift.ToggleSpike then
-        Shapeshift.ToggleSpike()
+    elseif parsed.cmd == "bar" and args[1] == "reset" and Shapeshift.ResetBarLayout then
+        Shapeshift.ResetBarLayout()
+        Print("The form's bar is back in its own order.")
+    elseif parsed.cmd == "talents" and Shapeshift.ToggleTalents then
+        Shapeshift.ToggleTalents(Shapeshift.CurrentForm())
     else
         Print(USAGE)
     end

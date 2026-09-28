@@ -103,8 +103,8 @@ static void ParsesPrime()
     CHECK(!ParsePrime("0", error));
     CHECK(!ParsePrime("11502 15727", error));
     CHECK(!ParsePrime("11502,abc", error));
-    CHECK(FormatCaps() == "CAPS;prime,size,as,speed,puppet,size200,puppetsize,stance");
-    CHECK(FormatCaps(false) == "CAPS;prime,size,as,speed,puppet,size200,puppetsize,stance,nocg");
+    CHECK(FormatCaps() == "CAPS;prime,size,as,speed,puppet,size200,puppetsize,stance,voice");
+    CHECK(FormatCaps(false) == "CAPS;prime,size,as,speed,puppet,size200,puppetsize,stance,voice,nocg");
 }
 
 static void ParsesSize()
@@ -530,6 +530,16 @@ static void Stances()
     CHECK(StanceCooldownMs == 1500);
 }
 
+static void Voices()
+{
+    CHECK(ParseVoice("17366") == std::optional<uint32_t>(17366));
+    CHECK(ParseVoice(" 8043 ") == std::optional<uint32_t>(8043));
+    CHECK(!ParseVoice("0"));
+    CHECK(!ParseVoice(""));
+    CHECK(!ParseVoice("12 13"));
+    CHECK(!ParseVoice("abc"));
+}
+
 // Deep pass B3: guardians summoned by a form's spells end with the form.
 static void FormSummons()
 {
@@ -562,6 +572,7 @@ int main()
     FormSpeeds();
     Puppets();
     Stances();
+    Voices();
     FormSummons();
     if (failures)
     {

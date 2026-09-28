@@ -523,7 +523,7 @@ namespace Shapeshift
     // nocg: this server has no class-grade spell rows, so the addon sends the creatures' own spells.
     inline std::string FormatCaps(bool classGrade = true)
     {
-        std::string caps = "CAPS;prime,size,as,speed,puppet,size200,puppetsize,stance";
+        std::string caps = "CAPS;prime,size,as,speed,puppet,size200,puppetsize,stance,voice";
         return classGrade ? caps : caps + ",nocg";
     }
 
@@ -544,6 +544,19 @@ namespace Shapeshift
         std::vector<std::string_view> words = Detail::Words(text);
         std::optional<uint32_t> n = words.size() == 1 ? Detail::Number(words[0]) : std::nullopt;
         if (!n || *n < 1 || *n > MaxStances)
+            return std::nullopt;
+        return n;
+    }
+
+    // ---- The soundboard (user, 2026-09-27) --------------------------------------------------
+    constexpr uint32_t VoiceGapMs = 1000;                   // the addon waits for the line itself
+
+    // `.shapeshifter voice <sound id>`: one of the form's creature's own spoken lines.
+    inline std::optional<uint32_t> ParseVoice(std::string_view text)
+    {
+        std::vector<std::string_view> words = Detail::Words(text);
+        std::optional<uint32_t> n = words.size() == 1 ? Detail::Number(words[0]) : std::nullopt;
+        if (!n || *n == 0)
             return std::nullopt;
         return n;
     }

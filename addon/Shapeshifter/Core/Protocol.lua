@@ -110,6 +110,20 @@ function P.BuildStance(n)
     return ".shapeshifter stance " .. n
 end
 
+-- One of the form's spoken lines, by its sound id (the soundboard; CAPS voice).
+function P.BuildVoice(sound)
+    return ".shapeshifter voice " .. sound
+end
+
+-- The soundboard's gate (user, 2026-09-27): a line may start once the last one has finished.
+-- Returns whether it may, and the seconds still to wait.
+function P.VoiceReady(busyUntil, now)
+    if busyUntil and now < busyUntil then
+        return false, busyUntil - now
+    end
+    return true, 0
+end
+
 function P.BuildApply(form, mode, sizePct, cg, toggles, caps)
     toggles = toggles or {}
     cg = P.ClassGradeFor(cg, caps)

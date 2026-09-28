@@ -27,6 +27,13 @@ def make_client(root):
     return root
 
 
+@pytest.fixture(autouse=True)
+def nothing_running(monkeypatch):
+    """The steps wait while the game or a server runs on this PC; tests see none unless they say so
+    (a test once waited forever while the maintainer played)."""
+    monkeypatch.setattr(install, "list_processes", lambda names: [])
+
+
 @pytest.fixture
 def backups(tmp_path, monkeypatch):
     monkeypatch.setattr(install, "BACKUPS", tmp_path / "backups")
@@ -381,7 +388,7 @@ def test_uninstall_classgrade_removes_the_rows_and_the_client_patch(tmp_path, ba
     assert list(backups.rglob("patch-Y.MPQ"))[0].read_bytes() == b"MPQ live"
 
 
-# ---- the automatic installer (0.15.0) -------------------------------------------------------------
+# ---- the automatic installer ----------------------------------------------------------------------
 
 CONF = """# worldserver.conf
 LoginDatabaseInfo = "127.0.0.1;3307;acore;s3cret;acore_auth"
@@ -614,7 +621,7 @@ def test_a_search_gives_up_after_its_time_budget(tmp_path):
     assert len(slow) < 31
 
 
-# ---- preparing the repack's own source (0.16.0) ---------------------------------------------------
+# ---- preparing the repack's own source ------------------------------------------------------------
 
 def make_repack_with_source(root, bots_rev="abc123"):
     exe = make_repack(root)
@@ -660,6 +667,7 @@ def test_preparing_unpacks_fetches_playerbots_and_configures(tmp_path, monkeypat
         return 0
     monkeypatch.setattr(install, "run", fake_run)
     monkeypatch.setattr(install.shutil, "which", lambda name: name)
+    monkeypatch.setattr(install, "missing_build_tools", lambda seed: [])
     args = type("A", (), {"server": str(exe), "bots": True, "core": None, "build": None, "seed": {}, "prepare_source": True})()
     assert install.step_source(install.Ui(False, []), args) is True
     src = tmp_path / "Repack" / "Source" / "shapeshifter-source"
@@ -678,6 +686,7 @@ def test_without_the_bots_box_no_playerbots_is_fetched(tmp_path, monkeypatch):
     exe = make_repack_with_source(tmp_path / "Repack")
     calls = []
     monkeypatch.setattr(install, "run", lambda ui, cmd, cwd=None, **kw: calls.append([str(c) for c in cmd]) or 0)
+    monkeypatch.setattr(install, "missing_build_tools", lambda seed: [])
     args = type("A", (), {"server": str(exe), "bots": False, "core": None, "build": None, "seed": {}, "prepare_source": True})()
     assert install.step_source(install.Ui(False, []), args) is True
     assert not any(c[:2] == ["git", "clone"] for c in calls)
@@ -735,6 +744,7 @@ def test_the_prepared_source_builds_release(tmp_path, monkeypatch):
     exe = make_repack_with_source(tmp_path / "Repack")
     calls = []
     monkeypatch.setattr(install, "run", lambda ui, cmd, cwd=None, **kw: calls.append([str(c) for c in cmd]) or 0)
+    monkeypatch.setattr(install, "missing_build_tools", lambda seed: [])
     args = type("A", (), {"server": str(exe), "bots": False, "core": None, "build": None, "seed": {}, "prepare_source": True})()
     assert install.step_source(install.Ui(False, []), args) is True
     configure = [c for c in calls if c[0] == "cmake"][0]
@@ -1079,3 +1089,165 @@ def test_update_does_nothing_when_this_is_the_latest(monkeypatch, capsys):
     monkeypatch.setattr(install, "download_release", lambda *a: pytest.fail("downloaded the same version"))
     assert install.main(["--update"]) == 0
     assert "latest" in capsys.readouterr().out
+
+
+# ---- a fresh PC (2026-09-28): tools off PATH, missing build tools, the DLLs a build loads -----------
+
+def test_git_off_path_is_found_where_its_installer_put_it(tmp_path, monkeypatch):
+    git = tmp_path / "Git" / "cmd" / "git.exe"
+    git.parent.mkdir(parents=True)
+    git.write_bytes(b"")
+    monkeypatch.setattr(install.shutil, "which", lambda name: None)
+    monkeypatch.setattr(install.os, "name", "nt")
+    monkeypatch.setattr(install, "tool_candidates", lambda name: [str(tmp_path / "nowhere"), str(git.parent)])
+    monkeypatch.setattr(install, "_found_tools", {})
+    assert install.find_tool("git") == str(git)
+    assert install.tool_command(["git", "apply", "x"]) == [str(git), "apply", "x"]
+    assert install.tool_command(["mysql", "x"]) == ["mysql", "x"]
+
+
+def test_a_missing_program_is_said_in_words_not_a_winerror(capsys):
+    code = install.run(install.Ui(False, []), ["shapeshifter-no-such-program-xyz", "--version"])
+    assert code == 127
+    assert "not installed" in capsys.readouterr().out
+    assert install.run_quiet(["shapeshifter-no-such-program-xyz"])[0] == 127
+
+
+MISSING = [("cmake", "CMake", "configures the build", "https://cmake.org/download/"),
+           ("boost", "Boost 1.81.0", "C++ libraries", "https://example.test/boost")]
+
+
+def test_preparing_without_the_tools_stops_before_changing_anything(tmp_path, monkeypatch, capsys):
+    exe = make_repack_with_source(tmp_path / "Repack")
+    calls = []
+    monkeypatch.setattr(install, "run", lambda ui, cmd, cwd=None, **kw: calls.append(cmd) or 0)
+    monkeypatch.setattr(install, "missing_build_tools", lambda seed: list(MISSING))
+    monkeypatch.setattr(install, "install_tool", lambda ui, key: pytest.fail("nothing was ticked"))
+    args = type("A", (), {"server": str(exe), "bots": True, "core": None, "build": None, "seed": {},
+                          "prepare_source": True, "install_tools": []})()
+    assert install.step_source(install.Ui(False, []), args) is False
+    out = capsys.readouterr().out
+    assert "CMake (configures the build): https://cmake.org/download/" in out and "Nothing on your server" in out
+    assert calls == [] and not (tmp_path / "Repack" / "Source" / "shapeshifter-source").exists()
+
+
+def test_the_ticked_tools_are_installed_before_the_source_is_prepared(tmp_path, monkeypatch):
+    exe = make_repack_with_source(tmp_path / "Repack")
+    monkeypatch.setattr(install, "run", lambda ui, cmd, cwd=None, **kw: 0)
+    have = set()
+    monkeypatch.setattr(install, "missing_build_tools", lambda seed: [m for m in MISSING if m[0] not in have])
+    monkeypatch.setattr(install, "install_tool", lambda ui, key: have.add(key) or True)
+    args = type("A", (), {"server": str(exe), "bots": False, "core": None, "build": None, "seed": {},
+                          "prepare_source": True, "install_tools": ["cmake", "boost"]})()
+    assert install.step_source(install.Ui(False, []), args) is True
+    assert have == {"cmake", "boost"}
+
+
+def test_the_install_is_gated_on_the_tools_it_needs(monkeypatch):
+    monkeypatch.setattr(install, "missing_build_tools", lambda seed: list(MISSING))
+    args = argparse.Namespace(server="x", prepare_source=True, build=None, seed={}, uninstall=False)
+    assert [m[0] for m in install.required_tools_missing(args)] == ["cmake", "boost"]
+    assert any("https://cmake.org/download/" in line for line in install.build_readiness(args))
+    ui = install.Ui(False, ["n"])                          # the player says no: nothing may start
+    assert install.acquire_tools(ui, args) is False
+    args = argparse.Namespace(server="x", prepare_source=False, build=None, seed={}, uninstall=False)
+    assert install.required_tools_missing(args) == []     # nothing to compile: no tools needed
+
+
+def test_main_stops_before_any_step_while_tools_are_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "discover", lambda ui, args: [setattr(args, k, v) for k, v in (("prepare_source", True), ("db", {}), ("seed", {}))] and None)
+    monkeypatch.setattr(install, "missing_build_tools", lambda seed: list(MISSING))
+    monkeypatch.setattr(install, "execute", lambda *a, **kw: pytest.fail("no step may run"))
+    assert install.main([], answers=["n"]) == 1
+
+
+def test_setups_own_tool_installs_are_handed_to_cmake(tmp_path, monkeypatch):
+    local = tmp_path / "local"
+    (local / "boost_1_81_0" / "boost").mkdir(parents=True)
+    (local / "boost_1_81_0" / "boost" / "version.hpp").write_text("")
+    (local / "mysql-8.4.9-winx64" / "include").mkdir(parents=True)
+    (local / "mysql-8.4.9-winx64" / "include" / "mysql.h").write_text("")
+    (local / "mysql-8.4.9-winx64" / "lib").mkdir()
+    (local / "mysql-8.4.9-winx64" / "lib" / "libmysql.lib").write_text("")
+    monkeypatch.setattr(install, "LOCAL", local)
+    monkeypatch.delenv("BOOST_ROOT", raising=False)
+    flags = install.found_dev_flags({})
+    assert "-DBOOST_ROOT=" + (local / "boost_1_81_0").as_posix() in flags
+    assert "-DMYSQL_LIBRARY=" + (local / "mysql-8.4.9-winx64" / "lib" / "libmysql.lib").as_posix() in flags
+    assert install.tool_present("boost") and install.tool_present("mysql")
+
+
+def test_winget_tools_install_silently_with_the_cpp_workload(monkeypatch):
+    calls = []
+    monkeypatch.setattr(install, "has_winget", lambda: True)
+    monkeypatch.setattr(install, "run", lambda ui, cmd, **kw: calls.append([str(c) for c in cmd]) or 0)
+    monkeypatch.setattr(install, "tool_present", lambda key, seed=None: True)
+    assert install.install_tool(install.Ui(False, []), "vs") is True
+    cmd = calls[0]
+    assert cmd[:5] == ["winget", "install", "--exact", "--id", "Microsoft.VisualStudio.2022.BuildTools"]
+    assert "--silent" in cmd and "--accept-package-agreements" in cmd
+    assert "Microsoft.VisualStudio.Workload.VCTools" in cmd[cmd.index("--override") + 1]
+
+
+def test_without_winget_a_tool_points_at_its_page(monkeypatch, capsys):
+    monkeypatch.setattr(install, "has_winget", lambda: False)
+    monkeypatch.setattr(install, "run", lambda *a, **kw: pytest.fail("nothing to run"))
+    assert install.install_tool(install.Ui(False, []), "git") is False
+    assert "https://git-scm.com/download/win" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows programs")
+def test_the_pe_import_reader_reads_a_real_program():
+    notepad = Path(install.os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "notepad.exe"
+    assert "kernel32.dll" in [n.lower() for n in install.pe_imports(notepad)]
+    assert install.pe_imports(__file__) == []
+
+
+def test_the_dlls_a_build_loads_go_beside_the_server(tmp_path, monkeypatch):
+    server = tmp_path / "server"
+    server.mkdir()
+    (server / "libcrypto-3-x64.dll").write_bytes(b"repack's")
+    (server / "msvcp140.dll").write_bytes(b"old runtime")
+    build = tmp_path / "bin"
+    build.mkdir()
+    (build / install.WORLDSERVER).write_bytes(b"exe")
+    system = tmp_path / "Windows" / "System32"
+    system.mkdir(parents=True)
+    for name in ("kernel32.dll", "msvcp140.dll", "libcrypto-4-x64.dll"):
+        (system / name).write_bytes(name.encode())
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(install, "registry_path", lambda: [])
+    monkeypatch.setattr(install, "openssl_root", lambda seed=None: None)
+    imports = {install.WORLDSERVER: ["KERNEL32.dll", "libmysql.dll", "libcrypto-3-x64.dll", "libcrypto-4-x64.dll",
+                                     "MSVCP140.dll", "api-ms-win-crt-heap-l1-1-0.dll"]}
+    monkeypatch.setattr(install, "pe_imports", lambda path: imports.get(Path(path).name, []))
+    monkeypatch.setattr(install, "file_company", lambda path: "Microsoft Corporation"
+                        if Path(path).name.lower() in ("kernel32.dll", "msvcp140.dll") else "The OpenSSL Project")
+    monkeypatch.setattr(install, "file_version", lambda path: (14, 51) if "System32" in str(path) else (14, 42))
+    wanted = sorted(p.name.lower() for p in install.runtime_dlls(build / install.WORLDSERVER, {}, server))
+    # OpenSSL 4 sat in System32 only on the build PC; the runtime there is newer than the server's.
+    assert wanted == ["libcrypto-4-x64.dll", "msvcp140.dll"]
+
+
+def test_an_uninstall_without_a_build_of_its_own_puts_the_repacks_server_back(tmp_path, monkeypatch, backups):
+    exe = make_repack_with_source(tmp_path / "Repack")
+    (exe.parent / "libmysql.dll").write_bytes(b"client 8.4.9")
+    (exe.parents[2] / "RELEASE.json").write_text('{"releaseId": "main-1", "binaries": [{"Name": "worldserver.exe", '
+                                                 '"SHA256": "%s"}]}' % install.file_sha256(exe))
+    ui = install.Ui(False, [])
+    ui.auto = True
+    install.keep_original(ui, exe)                            # the install, before its worldserver goes in
+    keep = exe.parent / install.ORIGINAL
+    assert (keep / install.WORLDSERVER).read_bytes() == b"old"
+    exe.write_bytes(b"shapeshifter")
+    (exe.parent / "libmysql.dll").write_bytes(b"client 8.4.11")
+    install.keep_original(ui, exe)                            # a reinstall: not the repack's, kept copy stays
+    assert (keep / install.WORLDSERVER).read_bytes() == b"old"
+    monkeypatch.setattr(install, "run", lambda *a, **kw: pytest.fail("no compile: {}".format(a)))
+    args = argparse.Namespace(server=str(exe), bots=True, core=None, build=None, seed={}, prepare_source=True,
+                              stamp="u", uninstall=True, config=None)
+    for step in ("module", "patches", "build"):
+        assert install.UNDO_FUNCS[step](ui, args) is True
+    assert install.UNDO_FUNCS["server"](ui, args) is True
+    assert exe.read_bytes() == b"old" and (exe.parent / "libmysql.dll").read_bytes() == b"client 8.4.9"

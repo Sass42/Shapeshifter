@@ -10,6 +10,7 @@ import queue
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
@@ -73,12 +74,133 @@ class WindowUi(install.Ui):
         return reply
 
 
-PREPARED_NOTE = "(leave empty: prepared from the repack's own source)"
+PREPARED_NOTE = "(leave empty: Setup takes care of it)"
 
 FIELDS = (("core", "AzerothCore source", "dir"), ("build", "Build folder", "dir"),
           ("server", "Server (worldserver)", "exe"), ("client", "Game client", "dir"),
           ("mysql", "MySQL client", "file"))
 
+
+class ToolsWindow:
+    """The build tools this PC lacks, in a window of its own: a box to tick (Setup downloads and installs
+    it) and the download page of each, with Check again for ones installed by hand. Continue turns on
+    only when none is missing; closing it goes on to the main window, where Install stays off."""
+
+    INTRO = ("Shapeshifter is compiled into your server, and this PC is missing tools for that. Tick the ones "
+             "Setup should download and install for you, or install them yourself from their links and click "
+             "Check again. Setup looks for your server once they are all here.")
+
+    def __init__(self, app, missing, compute, then):
+        self.app, self.compute, self.then = app, compute, then
+        self.missing, self.vars, self.busy = [], {}, False
+        top = self.top = tk.Toplevel(app.root)
+        top.title("{}: build tools".format(TITLE))
+        top.transient(app.root)
+        top.protocol("WM_DELETE_WINDOW", self.close)
+        frame = ttk.Frame(top, padding=12)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Build tools needed first", font=("Segoe UI", 13, "bold")).grid(row=0, column=0,
+                                                                                              sticky="w")
+        ttk.Label(frame, text=self.INTRO, wraplength=720, justify="left").grid(row=1, column=0, sticky="w",
+                                                                              pady=(4, 8))
+        self.rows = ttk.Frame(frame)
+        self.rows.grid(row=2, column=0, sticky="we")
+        actions = ttk.Frame(frame)
+        actions.grid(row=3, column=0, sticky="we", pady=8)
+        self.install_btn = ttk.Button(actions, text="Install ticked tools", command=self.install)
+        self.install_btn.pack(side="left")
+        self.check_btn = ttk.Button(actions, text="Check again", command=self.check)
+        self.check_btn.pack(side="left", padx=6)
+        self.continue_btn = ttk.Button(actions, text="Continue", command=self.done)
+        self.continue_btn.pack(side="right")
+        self.status = ttk.Label(frame, text="")
+        self.status.grid(row=4, column=0, sticky="w")
+        self.log = scrolledtext.ScrolledText(frame, height=10, width=100, font=("Consolas", 9), state="disabled")
+        self.log.grid(row=5, column=0, sticky="nsew", pady=(6, 0))
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(5, weight=1)
+        self.render(missing)
+        top.grab_set()
+
+    def render(self, missing):
+        ticked = {key: var.get() for key, var in self.vars.items()}
+        self.missing, self.vars = list(missing), {}
+        for child in self.rows.winfo_children():
+            child.destroy()
+        for row, (key, name, why, page) in enumerate(self.missing):
+            var = tk.BooleanVar(value=ticked.get(key, True))
+            self.vars[key] = var
+            ttk.Checkbutton(self.rows, text=name, variable=var).grid(row=row, column=0, sticky="w")
+            ttk.Label(self.rows, text=why, foreground="#555555").grid(row=row, column=1, sticky="w", padx=8)
+            link = tk.Label(self.rows, text=page, fg="#0645ad", cursor="hand2")
+            link.grid(row=row, column=2, sticky="w")
+            link.bind("<Button-1>", lambda e, url=page: webbrowser.open(url))
+        self.status.configure(text="All build tools are on this PC. Click Continue." if not self.missing else
+                              "Continue turns on once all of these are on this PC.")
+        self.set_busy(self.busy)
+
+    def set_busy(self, busy):
+        self.busy = busy
+        for button in (self.install_btn, self.check_btn):
+            button.configure(state="disabled" if busy or not self.missing else "normal")
+        self.continue_btn.configure(state="disabled" if busy or self.missing else "normal")
+
+    def write(self, text):
+        self.log.configure(state="normal")
+        self.log.insert("end", text)
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def check(self):
+        self.set_busy(True)
+
+        def work():
+            install._found_tools.clear()
+            missing = self.compute()
+            print("\n" + ("All build tools are here." if not missing else
+                          "Still missing: {}.".format(", ".join(m[1] for m in missing))))
+
+            def show():
+                self.set_busy(False)
+                self.render(missing)
+            self.app.calls.put(show)
+        self.app.in_thread(work)
+
+    def install(self):
+        keys = [key for key, var in self.vars.items() if var.get()]
+        if not keys:
+            messagebox.showinfo(TITLE, "Tick the tools Setup should install, or install them from their links "
+                                       "and click Check again.", parent=self.top)
+            return
+        names = [m[1] for m in self.missing if m[0] in keys]
+        if not messagebox.askyesno(TITLE, "Download and install {}?\n\nThis can take a while (Visual Studio is the "
+                                          "biggest, several GB). Windows asks for administrator rights for some of "
+                                          "them. Nothing on your server changes.".format(", ".join(names)),
+                                   parent=self.top):
+            return
+        self.set_busy(True)
+
+        def work():
+            ui = WindowUi(self.app, dry_run=False)
+            ui.auto = True
+            for key in keys:
+                install.install_tool(ui, key)
+            self.app.calls.put(self.check)
+        self.app.in_thread(work)
+
+    def close(self):
+        if self.busy and not messagebox.askyesno(TITLE, "A tool is still being installed. Close anyway?",
+                                                 parent=self.top):
+            return
+        self.done()
+
+    def done(self):
+        try:
+            self.top.grab_release()
+            self.top.destroy()
+        except tk.TclError:
+            pass
+        self.app.tools_closed(self, self.then)
 
 class App:
     def __init__(self, root):
@@ -107,6 +229,8 @@ class App:
             entry.bind("<FocusIn>", lambda e, k=key: self.clear_note(k))
             self.entries[key] = entry
             ttk.Button(top, text="Browse...", command=lambda k=key, kd=kind: self.browse(k, kd)).grid(row=i, column=2)
+        self.tools_missing = []            # build tools this PC lacks: Install stays off while any is
+        self.tools_window = None
         buttons = ttk.Frame(top)
         buttons.grid(row=9, column=0, columnspan=3, sticky="we", pady=4)
         self.install_btn = ttk.Button(buttons, text="Install", command=lambda: self.start(False))
@@ -120,14 +244,14 @@ class App:
         ttk.Button(buttons, text="Close", command=self.close).pack(side="right")
         self.progress = ttk.Progressbar(top, mode="indeterminate")
         self.progress.grid(row=10, column=0, columnspan=3, sticky="we", pady=(8, 6))
-        self.log = scrolledtext.ScrolledText(top, height=18, font=("Consolas", 9), state="disabled")
+        self.log = scrolledtext.ScrolledText(top, height=12, font=("Consolas", 9), state="disabled")
         self.log.grid(row=11, column=0, columnspan=3, sticky="nsew")
         top.columnconfigure(1, weight=1)
         top.rowconfigure(11, weight=1)
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.set_busy(True)
         self.pump()
-        self.in_thread(self.find)
+        self.in_thread(self.first_check)
 
     # ---- plumbing --------------------------------------------------------------------------------
     def pump(self):
@@ -138,6 +262,8 @@ class App:
                 self.log.insert("end", text)
                 self.log.see("end")
                 self.log.configure(state="disabled")
+                if self.tools_window:
+                    self.tools_window.write(text)
         except queue.Empty:
             pass
         try:
@@ -161,6 +287,8 @@ class App:
         self.busy = busy
         for button in (self.install_btn, self.uninstall_btn, self.update_btn):
             button.configure(state="disabled" if busy else "normal")
+        if self.tools_missing:
+            self.install_btn.configure(state="disabled")
         if busy:
             self.progress.start(12)
         else:
@@ -219,31 +347,75 @@ class App:
                 notes.append("Server found.")
             if not self.db:
                 notes.append("Database login not found. You will be asked for it.")
+            snapshot = self.run_args()
+            self.tools_missing = install.required_tools_missing(snapshot)
+            if self.tools_missing:
+                notes.append("This PC is still missing build tools: {}. Install stays off until they are here."
+                             .format(", ".join(m[1] for m in self.tools_missing)))
+                self.open_tools(self.tools_missing, lambda: install.required_tools_missing(snapshot))
+            else:
+                notes.extend(install.build_readiness(args))
             optional = ("core", "build") if getattr(args, "prepare_source", False) else ()
             missing = [label for key, label, _ in FIELDS if not self.path(key) and key not in optional]
             if missing:
                 notes.append("Not found: {}. Use Browse.".format(", ".join(missing)))
-            else:
+            elif not self.tools_missing:
                 notes.append("Everything needed was found. Click Install.")
             self.lines.put("\n" + "\n".join(notes) + "\n")
             self.set_busy(False)
         self.calls.put(show)
 
+    # ---- build tools -----------------------------------------------------------------------------
+    def first_check(self):
+        """Before anything else: the build tools. Missing ones come up in a window of their own, and the
+        search for your server (and the question which one) waits until they are all here."""
+        print("Checking this PC for the build tools a server build needs...")
+        missing = install.missing_build_tools({})
+        print("   " + ("all there." if not missing else "missing: {}.".format(", ".join(m[1] for m in missing))))
+
+        def next_step():
+            if missing:
+                self.open_tools(missing, lambda: install.missing_build_tools({}), then=lambda: self.in_thread(self.find))
+            else:
+                self.in_thread(self.find)
+        self.calls.put(next_step)
+
+    def open_tools(self, missing, compute, then=None):
+        if self.tools_window:
+            self.tools_window.render(missing)
+            return
+        self.tools_window = ToolsWindow(self, missing, compute, then)
+
+    def tools_closed(self, window, then):
+        self.tools_window = None
+        self.closed_tools = window         # a tool install still running holds it: never freed on its thread
+        self.tools_missing = window.missing
+        self.set_busy(self.busy)
+        if then:
+            then()
+    def run_args(self, uninstall=False):
+        """The paths and choices on screen, as install.py's arguments."""
+        paths = {k: self.path(k) for k in ("core", "build", "server", "client", "mysql")}
+        found = getattr(self, "found", None)
+        return argparse.Namespace(uninstall=uninstall, dry_run=False, step_by_step=False, config=None,
+                                  jobs=None, only=None, stamp=install.stamp(), db=self.db, bots=self.bots.get(),
+                                  seed=getattr(found, "seed", {}) if found else {}, install_tools=[],
+                                  prepare_source=not (paths["core"] and paths["build"]), **paths)
+
     # ---- running ---------------------------------------------------------------------------------
     def start(self, uninstall):
         what = "Uninstall" if uninstall else "Install"
+        if not uninstall and install.required_tools_missing(self.run_args()):
+            messagebox.showwarning(TITLE, "Get the build tools listed in the window first (Install ticked tools, "
+                                          "or their links and Check again).")
+            return
         message = ("{} Shapeshifter now?\n\nIt will stop the server if it is running, patch it and rebuild it if its "
                    "code changed (ten minutes to an hour), put the new one in place and start it again. Replaced files go to "
                    "the backups folder next to this program.").format(what)
         if not messagebox.askyesno(TITLE, message):
             return
         self.read_login() if not self.db else None
-        paths = {k: self.path(k) for k in ("core", "build", "server", "client", "mysql")}
-        found = getattr(self, "found", None)
-        args = argparse.Namespace(uninstall=uninstall, dry_run=False, step_by_step=False, config=None,
-                                  jobs=None, only=None, stamp=install.stamp(), db=self.db, bots=self.bots.get(),
-                                  seed=getattr(found, "seed", {}) if found else {},
-                                  prepare_source=not (paths["core"] and paths["build"]), **paths)
+        args = self.run_args(uninstall)
         self.set_busy(True)
 
         def work():
@@ -329,6 +501,7 @@ def selftest(out_path):
                   db_login=sorted(args.db), repack=bool(server and server.repack),
                   server_running=bool(server and server.running()), frozen=bool(getattr(sys, "frozen", False)),
                   prepare_source=bool(getattr(args, "prepare_source", False)), bots=bool(getattr(args, "bots", False)),
+                  missing_build_tools=[m[1] for m in install.required_tools_missing(args)],
                   seed_generator=(getattr(args, "seed", None) or {}).get("CMAKE_GENERATOR"))
     Path(out_path).write_text(json.dumps(report, indent=1), encoding="utf-8")
 

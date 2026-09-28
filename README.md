@@ -8,15 +8,16 @@ abilities, gear and talents, on its own action bar, and back to yourself with on
 
 A GM tool for AzerothCore (WotLK 3.3.5a) servers, built and tested on Conquest of Azeroth.
 
-- **533 Forms**, about 475 characters to become: 159 classic dungeon bosses, 50 classic raid bosses,
+- **569 Forms**, about 475 characters to become: 159 classic dungeon bosses, 50 classic raid bosses,
   59 from The Burning Crusade, 83 from Wrath of the Lich King, 34 faction leaders, 26 rare elites and
   66 creature types, from gnolls and murlocs to frost wyrms.
 - **Actually become the character**: its own spells with player cast bars, cooldowns and tooltips, its
   own resource (rage, energy or mana), its own gear on your character sheet, and a talent panel.
+- **Their voices**: forms whose creature really speaks get a board of its lines (203 forms); click
+  one and everyone near hears it.
 - **Shapeshifts and stances**: dragons switch between their mortal and dragon forms, bosses that transform
   do it on your stance bar (Zul'jin's five aspects), and weapon-swapping bosses swap too (Mr. Smite's
   scimitar, twin axes and hammer).
-- **162 skins** for the creature types: a white bear, a crimson harpy, a Frostwolf, a Defias pirate.
 - **a 3D catalogue** to browse and preview every form, favorites,
   search, and a size slider from pocket-sized to towering.
 - Balanced to your level, or Unleashed at the creature's full power.
@@ -25,8 +26,11 @@ A GM tool for AzerothCore (WotLK 3.3.5a) servers, built and tested on Conquest o
 
 1. Download `Shapeshifter-<version>.zip` from the [Releases](../../releases/latest) page and unzip it
    anywhere.
-2. Double-click **`Shapeshifter Setup.exe`**.
-3. Check what it found, tick **Install for CoA-Bots Server** if that is your server (it ticks itself
+2. Double-click **`Shapeshifter Setup.exe`** (if Windows SmartScreen appears: **More info**, then
+   **Run anyway**).
+3. If build tools are missing, a **Build tools needed first** window lists them: tick the ones Setup
+   should install (or install them from their links and click **Check again**), then **Continue**.
+4. Check what it found, tick **Install for CoA-Bots Server** if that is your server (it ticks itself
    when it sees one running), and click **Install**.
 
 That's it. Setup does the rest, and tells you when it is done. Then log in on a GM account and click the minimap button (or type
@@ -37,16 +41,24 @@ logout do too.
 
 - Finds your server, its source code, your game client and the database login by itself (Browse
   buttons for anything it misses).
+- First checks that the PC has the tools for building a server. Any that are missing come up in their
+  own window with a link each; tick the ones Setup should download and install for you (or install
+  them yourself and click Check again). It only looks for your server, and Install only turns on, once
+  they are all there.
 - If your server is newer than any source on the PC (a fresh repack, or a repack update), it prepares
-  the repack's own source, and for the CoA-Bots server fetches the exact mod-playerbots it was built with.
-- Adds Shapeshifter to the source, stops your running server, builds a new one, swaps it in, sets up the database, installs the class data and the addon,
-  and starts your server again.
+  the repack's own source, and for the CoA-Bots server fetches the exact mod-playerbots it was built
+  with; it adds Shapeshifter to the source and builds a new server, and puts the DLLs that server needs
+  beside it.
+- Stops your running server, swaps the new one in, sets up the database, installs the class data and
+  the addon, and starts your server again.
 - Keeps a copy of everything it replaces in `backups/`, and carries your settings over from older
   versions.
 
-**You need:** Windows, git and CMake, and the tools for building AzerothCore (Visual Studio, Boost,
-OpenSSL and the MySQL libraries; if you have built your server before, you have them). An internet
-connection for the CoA-Bots server. The first build may take a while.
+**You need:** Windows 10 or 11 and an internet connection. The build tools (Git, CMake, Visual Studio
+Build Tools with C++, Boost, OpenSSL and the MySQL client library) are checked for first, and Setup can
+install the missing ones for you. On a PC that never built a server, that is a one-time download of
+several GB (mostly Visual Studio) that can take an hour, plus the first build. If you have built your
+server before, you already have them.
 
 **Uninstall:** open Setup and click **Uninstall**. Everything is put back the way it was, and what it
 takes out is kept in `backups/`.

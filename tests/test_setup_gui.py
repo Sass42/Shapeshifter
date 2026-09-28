@@ -1,5 +1,6 @@
 """The setup window, driven without showing it: discovery fills the fields, Install runs every step
 (dry run) and says so. Dialogs are stubbed."""
+import gc
 import sys
 import time
 from pathlib import Path
@@ -25,6 +26,13 @@ def root():
     except tk.TclError:
         pass
     install.WINDOWED = False
+    gc.collect()                           # Tk objects must be freed on this thread, never a worker's
+
+
+@pytest.fixture(autouse=True)
+def tools_present(monkeypatch):
+    """Every build tool is on the PC unless a test says otherwise (the window checks them first)."""
+    monkeypatch.setattr(install, "missing_build_tools", lambda seed=None: [])
 
 
 def settle(root, until, timeout=20.0):
@@ -170,3 +178,54 @@ def test_declining_an_update_downloads_nothing(root, tmp_path, monkeypatch):
     assert settle(root, lambda: not app.busy)
     app.check_update()
     assert settle(root, lambda: not app.busy and "9.0.0" in app.log.get("1.0", "end"))
+
+
+
+def test_missing_build_tools_come_first_in_their_own_window(root, tmp_path, monkeypatch):
+    core, client, discover = fake_find(tmp_path)
+    searched = []
+
+    def preparing(ui, args, ask_missing=True):
+        searched.append(True)
+        discover(ui, args, ask_missing)
+        args.core, args.prepare_source, args.server = None, True, str(tmp_path / "worldserver.exe")
+        return None
+    monkeypatch.setattr(install, "discover", preparing)
+    have = set()
+    tools = [("cmake", "CMake", "configures the build", "https://cmake.org/download/"),
+             ("vs", "Visual Studio Build Tools (C++)", "the compiler", "https://visualstudio.microsoft.com/")]
+    monkeypatch.setattr(install, "missing_build_tools", lambda seed=None: [t for t in tools if t[0] not in have])
+    app = setup_gui.App(root)
+    assert settle(root, lambda: app.tools_window is not None)
+    window = app.tools_window
+    assert [m[0] for m in window.missing] == ["cmake", "vs"] and all(v.get() for v in window.vars.values())
+    assert str(window.continue_btn.cget("state")) == "disabled"
+    assert not searched and str(app.install_btn.cget("state")) == "disabled"   # no server search yet
+    window.check()                                          # still missing: nothing moves on
+    assert settle(root, lambda: not window.busy)
+    assert str(window.continue_btn.cget("state")) == "disabled" and not searched
+    have.update({"cmake", "vs"})                            # the player installed them from the links
+    window.check()
+    assert settle(root, lambda: not window.busy and not window.missing)
+    assert str(window.continue_btn.cget("state")) == "normal"
+    window.done()
+    assert settle(root, lambda: searched and not app.busy)  # only now: the search for the server
+    assert app.tools_window is None and str(app.install_btn.cget("state")) == "normal"
+
+
+def test_closing_the_tools_window_leaves_install_off(root, tmp_path, monkeypatch):
+    core, client, discover = fake_find(tmp_path)
+
+    def preparing(ui, args, ask_missing=True):
+        discover(ui, args, ask_missing)
+        args.core, args.prepare_source, args.server = None, True, str(tmp_path / "worldserver.exe")
+        return None
+    monkeypatch.setattr(install, "discover", preparing)
+    tools = [("cmake", "CMake", "configures the build", "https://cmake.org/download/")]
+    monkeypatch.setattr(install, "missing_build_tools", lambda seed=None: list(tools))
+    app = setup_gui.App(root)
+    assert settle(root, lambda: app.tools_window is not None)
+    app.tools_window.close()                                # the player closes it: on to the main window
+    assert settle(root, lambda: app.tools_window is not None and not app.busy)   # it comes back after the search
+    assert str(app.install_btn.cget("state")) == "disabled"
+    assert str(app.uninstall_btn.cget("state")) == "normal"

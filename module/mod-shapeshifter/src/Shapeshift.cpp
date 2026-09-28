@@ -6,6 +6,7 @@
 
 #include "Chat.h"
 #include "CreatureData.h"
+#include "CreatureTextMgr.h"
 #include "DatabaseEnv.h"
 #include "Item.h"
 #include "Log.h"
@@ -277,8 +278,10 @@ namespace Shapeshift
         return it->second.formSpellSet.count(spellId) ? it->second.spellScale : 1.0f;
     }
 
+    // utility: opening or using a world object, or calling a companion pet; allowed in every form
+    // (user, 2026-09-27), as items already are.
     CastVerdict Engine::CheckCast(ObjectGuid guid, uint32 spellId, bool fromItem, bool triggered, bool mounts,
-                                  bool shapeshifts)
+                                  bool shapeshifts, bool utility)
     {
         if (!AnyActive())
             return CastVerdict::Allow;
@@ -290,7 +293,7 @@ namespace Shapeshift
             return CastVerdict::Refuse;            // full and look-only forms alike
         if (shapeshifts && it->second.ClassGrade() && !it->second.lookOnly)
             return CastVerdict::Refuse;            // even triggered or from an item (ruling change 6)
-        if (it->second.lookOnly || triggered || fromItem)
+        if (it->second.lookOnly || triggered || fromItem || utility)
             return CastVerdict::Allow;
         std::vector<uint32> const& kit = it->second.mappedKit;
         std::vector<uint32> const& stance = it->second.stanceKit;
@@ -378,8 +381,9 @@ namespace Shapeshift
             UpdateMeleeScale(player, form);
             ResourceOn(player, form);
             ManaOn(player, form);
-            if (args.fly)
-                player->SetCanFly(true);
+            // Only a form that flies may fly (user, 2026-09-27): a GM's own fly is off while a
+            // walking form is worn, and back on revert (gmFly).
+            player->SetCanFly(args.fly);
             SpeedOn(player, form);
             if (StanceRow const* first = StanceOf(args.gearSet, 1))
             {
@@ -1039,6 +1043,8 @@ namespace Shapeshift
             if (airborne && !keep && (reason == RevertReason::Command || reason == RevertReason::Replace))
                 player->AddAura(SPELL_SLOW_FALL, player);
         }
+        else if (!form.lookOnly && form.gmFly)
+            player->SetCanFly(true);            // the GM fly a walking form took away
 
         if (form.realLevel)
         {
@@ -1169,6 +1175,46 @@ namespace Shapeshift
 
     // The menu's size slider: change the current form's size and nothing else (no revert, no
     // relearning), then report the new state so the addon's slider and bars agree.
+    // The soundboard: one of the form's creature's own said or yelled lines, heard and read by
+    // everyone near (user, 2026-09-27). Only a line of the worn creature (or its `as` identity).
+    std::string Engine::Voice(Player* player, uint32 sound)
+    {
+        uint32 entries[2] = { 0, 0 };
+        {
+            std::lock_guard<std::mutex> guard(_lock);
+            auto it = _active.find(player->GetGUID());
+            if (it == _active.end())
+                return "You are not transformed.";
+            ActiveForm& form = it->second;
+            uint32 now = getMSTime();
+            if (form.voicedMs && getMSTimeDiff(form.voicedMs, now) < VoiceGapMs)
+                return "";
+            entries[0] = form.args.identity;
+            entries[1] = form.args.entry;
+            form.voicedMs = now;
+        }
+        CreatureTextMap const& texts = sCreatureTextMgr->GetTextMap();
+        for (uint32 entry : entries)
+        {
+            auto creature = entry ? texts.find(entry) : texts.end();
+            if (creature == texts.end())
+                continue;
+            for (auto const& [group, lines] : creature->second)
+                for (CreatureTextEntry const& line : lines)
+                {
+                    if (line.sound != sound || (line.type != CHAT_MSG_MONSTER_SAY && line.type != CHAT_MSG_MONSTER_YELL))
+                        continue;
+                    player->PlayDistanceSound(sound);
+                    if (line.type == CHAT_MSG_MONSTER_YELL)
+                        player->Yell(line.text, LANG_UNIVERSAL);
+                    else
+                        player->Say(line.text, LANG_UNIVERSAL);
+                    return "";
+                }
+        }
+        return "That is not one of this form's lines.";
+    }
+
     std::string Engine::Resize(Player* player, uint32 sizePct)
     {
         std::optional<ActiveForm> speed;       // copied out under the lock, applied after it
@@ -1416,17 +1462,19 @@ namespace Shapeshift
         CharacterDatabase.Execute("DELETE FROM shapeshifter_active WHERE guid = {}", player->GetGUID().GetCounter());
     }
 
-    // A map change can reset movement flags; keep a flying form flying.
+    // A map change can reset movement flags; keep a flying form flying and a walking one walking.
     void Engine::OnMapChanged(Player* player)
     {
+        bool full = false;
         bool fly = false;
         {
             std::lock_guard<std::mutex> guard(_lock);
             auto it = _active.find(player->GetGUID());
-            fly = it != _active.end() && it->second.args.fly && !it->second.lookOnly;
+            full = it != _active.end() && !it->second.lookOnly;
+            fly = full && it->second.args.fly;
         }
-        if (fly)
-            player->SetCanFly(true);
+        if (full)
+            player->SetCanFly(fly);
     }
 
     // Scale auras and level ups reset the object scale; put the form's size back on top of them.

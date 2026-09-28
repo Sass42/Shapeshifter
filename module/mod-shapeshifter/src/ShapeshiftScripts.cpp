@@ -11,6 +11,7 @@
 #include "Chat.h"
 #include "ChatCommand.h"
 #include "Creature.h"
+#include "DBCStores.h"
 #include "Log.h"
 #include "Player.h"
 #include "ScriptMgr.h"
@@ -50,6 +51,25 @@ namespace
             || info->HasAura(SPELL_AURA_MOD_DISARM_OFFHAND) || info->HasAura(SPELL_AURA_MOD_DISARM_RANGED));
     }
 
+    // Opening or using a world object (chests, quest objects, herbs and ore), or calling a companion
+    // pet: not the player's own combat abilities, so a form may use them (user, 2026-09-27).
+    bool IsUtility(SpellInfo const* info)
+    {
+        if (!info)
+            return false;
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            uint32 effect = info->Effects[i].Effect;
+            if (effect == SPELL_EFFECT_OPEN_LOCK)
+                return true;
+            if (effect == SPELL_EFFECT_SUMMON)
+                if (SummonPropertiesEntry const* props = sSummonPropertiesStore.LookupEntry(info->Effects[i].MiscValueB))
+                    if (props->Type == SUMMON_TYPE_MINIPET)
+                        return true;
+        }
+        return false;
+    }
+
     bool GearLocked(Player* player)
     {
         if (!player || !Engine::Instance().AnyActive() || !Engine::Instance().GearFixed(player->GetGUID()))
@@ -76,6 +96,7 @@ public:
             { "size",   HandleSize,   SEC_GAMEMASTER, Console::No },
             { "puppet", HandlePuppet, SEC_GAMEMASTER, Console::No },
             { "stance", HandleStance, SEC_GAMEMASTER, Console::No },
+            { "voice",  HandleVoice,  SEC_GAMEMASTER, Console::No },
         };
         static ChatCommandTable commandTable =
         {
@@ -114,9 +135,14 @@ public:
         return true;
     }
 
+    // Not in combat (user, 2026-09-27): the client cannot give the player's own bar back until
+    // combat ends. Death and logout still revert (their own hooks), in combat or not.
     static bool HandleRevert(ChatHandler* handler)
     {
-        Engine::Instance().Revert(handler->GetPlayer(), Shapeshift::RevertReason::Command);
+        Player* player = handler->GetPlayer();
+        if (player->IsInCombat() && Engine::Instance().Get(player->GetGUID()))
+            return Fail(handler, player, "revert", "You can't revert in combat.");
+        Engine::Instance().Revert(player, Shapeshift::RevertReason::Command);
         return true;
     }
 
@@ -175,6 +201,19 @@ public:
         std::string problem = Engine::Instance().Stance(player, *stance);
         if (!problem.empty())
             return Fail(handler, player, "stance", problem);
+        return true;
+    }
+
+    // voice <sound id>: the soundboard (user, 2026-09-27).
+    static bool HandleVoice(ChatHandler* handler, Tail rest)
+    {
+        Player* player = handler->GetPlayer();
+        std::optional<uint32> sound = Shapeshift::ParseVoice(rest);
+        if (!sound)
+            return Fail(handler, player, "args", "Shapeshifter: expected: voice <sound id>");
+        std::string problem = Engine::Instance().Voice(player, *sound);
+        if (!problem.empty())
+            return Fail(handler, player, "voice", problem);
         return true;
     }
 
@@ -308,7 +347,7 @@ public:
         SpellInfo const* info = spell->GetSpellInfo();
         if (Engine::Instance().CheckCast(player->GetGUID(), info->Id, spell->m_CastItem != nullptr,
                 spell->IsTriggered(), info->HasAura(SPELL_AURA_MOUNTED),
-                info->HasAura(SPELL_AURA_MOD_SHAPESHIFT)) == Shapeshift::CastVerdict::Refuse)
+                info->HasAura(SPELL_AURA_MOD_SHAPESHIFT), IsUtility(info)) == Shapeshift::CastVerdict::Refuse)
             res = SPELL_FAILED_NOT_SHAPESHIFT;
     }
 };

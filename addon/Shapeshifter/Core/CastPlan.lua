@@ -24,3 +24,31 @@ function CP.Choose(spell, info)
     end
     return { type = "spell", spell = spell.name }
 end
+
+-- The boss bar's slots (slot -> spell id): the player's layout where its spells are still in the
+-- kit, then every other kit spell in the first free slot, in kit order.
+function CP.ArrangeBar(kit, layout, slots)
+    local out, placed = {}, {}
+    local inKit = {}
+    for _, id in ipairs(kit) do
+        inKit[id] = true
+    end
+    for slot, id in pairs(layout or {}) do
+        if inKit[id] and not placed[id] and slot >= 1 and slot <= slots and not out[slot] then
+            out[slot], placed[id] = id, true
+        end
+    end
+    local free = 1
+    for _, id in ipairs(kit) do
+        if not placed[id] then
+            while out[free] do
+                free = free + 1
+            end
+            if free > slots then
+                break
+            end
+            out[free], placed[id] = id, true
+        end
+    end
+    return out
+end

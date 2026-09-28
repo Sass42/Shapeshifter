@@ -114,7 +114,7 @@ function C.Skins(forms, form)
             made[i] = made[i] or setmetatable({
                 entry = skin.entry, as = base.as or base.entry, display = skin.display or 0,
                 height = skin.height or 0, span = skin.span or 0, box = skin.box or false,
-                charModel = skin.charModel or false, view = false, skinName = skin.name, skinBase = base,
+                charModel = skin.charModel or false, view = skin.view or false, skinName = skin.name, skinBase = base,
                 skinCreature = skin.creature,
             }, { __index = base })
             out[#out + 1] = made[i]
@@ -481,9 +481,34 @@ function C.Choice(db, key)
     if saved then
         return { mode = saved.mode, size = saved.size }
     end
-    return { mode = "balanced", size = 100 }
+    return { mode = db.lastMode or "balanced", size = 100 }
+end
+
+-- The mode picked last, on any form, is the default for forms never transformed into (user,
+-- 2026-09-27: the menu remembers Balanced or Unleashed).
+-- The key a preview framing is kept under: the form's own, or a skin's by its creature, so each
+-- look keeps its framing (a skin form shares its archetype's id).
+function C.ViewKey(selected)
+    if not selected or selected.kind ~= "form" then
+        return nil
+    end
+    local form = selected.form
+    if form.skinBase then
+        return "skin:" .. form.entry
+    end
+    return "form:" .. form.id
 end
 
 function C.Remember(db, key, mode, size)
     db.lastChoice[key] = { mode = mode, size = size }
+    db.lastMode = mode
+end
+
+-- A click on Balanced or Unleashed is kept at once, with the form's size as it was.
+function C.RememberMode(db, key, mode)
+    local saved = key and db.lastChoice[key]
+    if key then
+        db.lastChoice[key] = { mode = mode, size = saved and saved.size or 100 }
+    end
+    db.lastMode = mode
 end

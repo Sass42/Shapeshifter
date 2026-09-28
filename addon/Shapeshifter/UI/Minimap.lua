@@ -1,5 +1,6 @@
 -- Shapeshift minimap button: the bauble. Shows the current form's icon, drags around the
--- minimap ring, left-click toggles the catalogue, right-click reverts.
+-- minimap ring, left-click toggles the catalogue, right-click reverts, or becomes the last form
+-- used when you are yourself.
 
 local NEUTRAL_ICON = "Interface\\Icons\\Spell_Nature_Polymorph"
 local RADIUS = 80
@@ -52,6 +53,8 @@ button:SetScript("OnClick", function(self, mouse)
     if mouse == "RightButton" then
         if Shapeshift.state.active then
             Shapeshift.Revert()
+        else
+            Shapeshift.ApplyLast()
         end
     elseif Shapeshift.ToggleCatalogue then
         Shapeshift.ToggleCatalogue()
@@ -68,8 +71,11 @@ button:SetScript("OnEnter", function(self)
         GameTooltip:AddLine("Not transformed", 1, 1, 1)
     end
     GameTooltip:AddLine("Left-click: open or close the menu", 0.7, 0.7, 0.7)
+    local last = not state.active and Shapeshift.LastForm()
     if state.active then
         GameTooltip:AddLine("Right-click: revert", 0.7, 0.7, 0.7)
+    elseif last then
+        GameTooltip:AddLine("Right-click: become " .. last.label .. " again", 0.7, 0.7, 0.7)
     end
     GameTooltip:AddLine("Drag: move around the minimap", 0.7, 0.7, 0.7)
     GameTooltip:Show()

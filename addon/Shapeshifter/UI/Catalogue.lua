@@ -290,20 +290,43 @@ bigIcon:SetSize(96, 96)
 bigIcon:SetPoint("CENTER", model, "CENTER")
 bigIcon:Hide()
 
--- Drag to turn the model, or hold the rotate buttons under it (as the dressing room does). The
--- framing is fixed: the user's hand framings are baked into Forms.lua (`view`), and the move, zoom
--- and reset controls are gone (user, 2026-09-26).
+-- Drag to turn the model, or hold the rotate buttons under it (as the dressing room does).
+-- Right-drag moves it, the wheel zooms and a middle click goes back to the baked or automatic
+-- framing (back again at the user's ask, 2026-09-27: some forms still need framing). A framing is
+-- kept for its form the moment the drag or the wheel lets go, over the baked one (Forms.lua `view`).
 local facing, dragX, spin = 0, nil, 0
+local panX, panY = nil, nil
+local SaveView, ResetView           -- set once the framing code exists, below
+model:EnableMouseWheel(true)
 model:SetScript("OnMouseDown", function(self, button)
-    if button == "LeftButton" then
+    if button == "RightButton" then
+        panX, panY = GetCursorPosition()
+    elseif button == "MiddleButton" then
+        if ResetView then
+            ResetView(self)
+        end
+    else
         dragX = GetCursorPosition()
     end
 end)
 model:SetScript("OnMouseUp", function(self, button)
-    if button == "LeftButton" then
+    if button == "RightButton" then
+        panX, panY = nil, nil
+        if SaveView then
+            SaveView(self)
+        end
+    else
         dragX = nil
     end
 end)
+model:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:SetText("Preview", 1, 1, 1)
+    GameTooltip:AddLine("Left-drag: turn. Right-drag: move. Wheel: zoom. Middle-click: reset.", 0.8, 0.8, 0.8, true)
+    GameTooltip:AddLine("Your framing is kept for each form as soon as you let go.", 0.6, 0.6, 0.6, true)
+    GameTooltip:Show()
+end)
+model:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
 local function RotateButton(direction, point, x)
     local b = CreateFrame("Button", nil, detail)
@@ -491,13 +514,47 @@ function Shapeshift.PreviewDistance(distance)
     PlaceUnit(model)
 end
 
--- The form's baked framing (the user's own, from views.json), over the auto-framing.
+-- The player's framing for the shown form, else its baked one (views.json), over the auto-framing.
 ApplyView = function(frame)
-    local view = frame.form and frame.form.view
+    local views = ShapeshifterDB and ShapeshifterDB.previewViews
+    local view = views and frame.viewKey and views[frame.viewKey] or (frame.form and frame.form.view)
     if view then
         frame:SetPosition(view[1], view[2], view[3])
     end
 end
+
+SaveView = function(frame)
+    if not (ShapeshifterDB and frame.viewKey) then
+        return
+    end
+    ShapeshifterDB.previewViews = ShapeshifterDB.previewViews or {}
+    local x, y, z = frame:GetPosition()
+    ShapeshifterDB.previewViews[frame.viewKey] = { x, y, z }
+end
+
+ResetView = function(frame)
+    if ShapeshifterDB and ShapeshifterDB.previewViews and frame.viewKey then
+        ShapeshifterDB.previewViews[frame.viewKey] = nil
+    end
+    if frame.puppetUnit and UnitExists(frame.puppetUnit) then
+        PlaceUnit(frame)
+    else
+        frame:SetPosition(0, 0, 0)
+    end
+    ApplyView(frame)
+end
+
+-- How far a wheel notch or a pixel of drag moves the model: more for big ones.
+local function Reach(frame)
+    local form = frame.form
+    return math.max(2, form and math.max(form.height or 0, form.span or 0) or 0)
+end
+
+model:SetScript("OnMouseWheel", function(self, delta)
+    local x, y, z = self:GetPosition()
+    self:SetPosition(x + delta * 0.08 * Reach(self), y, z)
+    SaveView(self)
+end)
 
 -- The first draw often lands before the model has loaded, which drops its placement, so it showed
 -- off-centre and jumped into place on the second draw (user, 2026-09-26). It stays invisible until
@@ -577,6 +634,16 @@ end)
 
 model:SetScript("OnUpdate", function(self, elapsed)
     UpdatePuppet(self, elapsed)
+    if panX then
+        local cx, cy = GetCursorPosition()
+        local x, y, z = self:GetPosition()
+        local k = 0.004 * Reach(self)
+        if cx ~= panX or cy ~= panY then
+            self:SetPosition(x, y + (cx - panX) * k, z + (cy - panY) * k)
+            panX, panY = cx, cy
+            SaveView(self)          -- kept as it moves: a release outside the preview loses nothing
+        end
+    end
     if dragX then
         local x = GetCursorPosition()
         facing = facing + (x - dragX) / 80
@@ -703,8 +770,9 @@ local function SetMode(value)
     balanced:SetChecked(value == "balanced")
     unleashed:SetChecked(value == "unleashed")
 end
-balanced:SetScript("OnClick", function() SetMode("balanced") end)
-unleashed:SetScript("OnClick", function() SetMode("unleashed") end)
+local PickMode                  -- set below, once SelectedKey exists
+balanced:SetScript("OnClick", function() PickMode("balanced") end)
+unleashed:SetScript("OnClick", function() PickMode("unleashed") end)
 local function ModeTip(button, text)
     button:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -783,6 +851,12 @@ local function IsCurrent()
     return state.active and state.entry == SelectedEntry()
 end
 
+PickMode = function(value)
+    SetMode(value)
+    C.RememberMode(ShapeshifterDB, SelectedKey(), value)
+    Refresh()                   -- the ability row shows the mode's spells
+end
+
 -- Dragging the slider on the form you are wearing resizes you as it moves (servers that can).
 SliderMoved = function(newSize)
     if IsCurrent() and Shapeshift.Resize(newSize) then
@@ -827,7 +901,7 @@ end)
 talents:SetScript("OnClick", function()
     local s = view.selected
     if s and s.kind == "form" then
-        Shapeshift.ShowTalents(s.form)
+        Shapeshift.ToggleTalents(s.form)
     end
 end)
 
@@ -855,6 +929,7 @@ local function ShowDetail()
     local entry = SelectedEntry()
     if model.entry ~= entry then
         model.entry = entry
+        model.viewKey = C.ViewKey(s)
         facing = 0
         bigIcon:Hide()
         bigIcon:SetTexture(s.kind == "form" and s.form.icon or NEUTRAL_ICON)
@@ -975,7 +1050,7 @@ local function ShowDetail()
     flag:SetText(s.kind == "creature" and ShapeshifterDB.flagged[s.entry] and "Unflag" or "Flag for curation")
 
     transform:SetText(IsCurrent() and "Revert" or "Transform")
-    if Shapeshift.ServerReady() and (IsCurrent() or not InCombatLockdown()) then
+    if Shapeshift.ServerReady() and not InCombatLockdown() then
         transform:Enable()
     else
         transform:Disable()
